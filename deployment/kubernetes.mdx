@@ -1,0 +1,182 @@
+---
+title: "Kubernetes deployment"
+description: "Deploy KBS on a Kubernetes cluster using the KBS Operator or manual Kubernetes manifests."
+---
+
+Two methods are available for deploying Trustee on Kubernetes:
+
+- **KBS Operator** — a Kubernetes operator that manages the full lifecycle of KBS, including installation, configuration, and upgrades.
+- **Manual manifests** — Kustomize-based manifests in the `kbs/config/kubernetes/` directory for direct deployment.
+
+<Warning>
+  The manifests and instructions below do not account for all stateful resources in a KBS deployment. Changes to a deployment may be lost if the pod is restarted or rescheduled, and service replication might yield inconsistent behavior. For a production deployment, use a persistent volume.
+</Warning>
+
+## KBS Operator
+
+The recommended approach for production Kubernetes deployments is the [KBS Operator](https://github.com/confidential-containers/kbs-operator). The operator manages KBS as a custom resource and handles upgrades and reconciliation automatically.
+
+Refer to the KBS Operator repository for installation instructions and CRD reference.
+
+## Manual deployment with Kustomize
+
+The `kbs/config/kubernetes/` directory contains Kustomize base manifests and overlays for deploying KBS with built-in Attestation Service.
+
+<Steps>
+  <Step title="Prepare secrets">
+    Create the secret that KBS will serve to attested workloads:
+
+    ```bash
+    echo "This is my super secret" > kbs/config/kubernetes/overlays/key.bin
+    ```
+
+    For IBM Secure Execution environments:
+
+    ```bash
+    echo "This is my super secret" > kbs/config/kubernetes/overlays/ibm-se/key.bin
+    ```
+
+    To serve multiple secrets, copy them to the `overlays/` directory and add them to `overlays/kustomization.yaml`:
+
+    ```yaml
+    - name: keys
+      files:
+        - key.bin
+        - secret.key
+        - password.txt
+    ```
+  </Step>
+
+  <Step title="Configure the resource repository">
+    With the default configuration, keys are stored under `reponame/workload_key/`. To use a different repository path, edit `overlays/patch.yaml`.
+  </Step>
+
+  <Step title="Configure the resource policy (optional)">
+    The default policy file is `kbs/config/kubernetes/base/policy.rego`. To apply a different policy—for example, an allow-all policy for testing—replace it before deploying:
+
+    ```bash
+    cp kbs/sample_policies/allow_all.rego kbs/config/kubernetes/base/policy.rego
+    ```
+  </Step>
+
+  <Step title="Deploy KBS">
+    Run the deployment script:
+
+    ```bash
+    ./kbs/config/kubernetes/deploy-kbs.sh
+    ```
+
+    For IBM Secure Execution environments, set the `IBM_SE_CREDS_DIR` environment variable before deploying:
+
+    ```bash
+    export IBM_SE_CREDS_DIR=/path/to/your/directory
+    ./kbs/config/kubernetes/deploy-kbs.sh
+    ```
+
+    The directory must contain the following structure:
+
+    ```
+    /path/to/your/directory
+    ├── certs
+    │   ├── DigiCertCA.crt
+    │   └── ibm-z-host-key-signing-gen2.crt
+    ├── crls
+    │   └── ibm-z-host-key-gen2.crl
+    ├── hdr
+    │   └── hdr.bin
+    ├── hkds
+    │   └── HKD-3931-0275D38.crt
+    └── rsa
+        ├── encrypt_key.pem
+        └── encrypt_key.pub
+    ```
+  </Step>
+
+  <Step title="Verify the deployment">
+    ```bash
+    kubectl -n coco-tenant get pods
+    ```
+
+    A successful deployment looks like:
+
+    ```
+    NAME                  READY   STATUS    RESTARTS   AGE
+    kbs-bdffc8dd4-jv2kr   1/1     Running   0          7m30s
+    ```
+
+    Check the deployed service:
+
+    ```bash
+    kubectl -n coco-tenant get service
+    ```
+
+    ```
+    NAME   TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+    kbs    ClusterIP   10.0.210.190   <none>        8080/TCP   4s
+    ```
+  </Step>
+</Steps>
+
+## Exposing KBS
+
+<Tabs>
+  <Tab title="ClusterIP (default)">
+    By default, KBS is deployed as a `ClusterIP` service accessible only within the cluster on port `8080`.
+  </Tab>
+  <Tab title="NodePort">
+    To expose KBS using a NodePort, set the deployment directory before running the deployment script:
+
+    ```bash
+    export DEPLOYMENT_DIR=nodeport
+    ./kbs/config/kubernetes/deploy-kbs.sh
+    ```
+
+    After deployment, retrieve the KBS URL:
+
+    ```bash
+    echo $(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}'):$(kubectl get svc kbs -n coco-tenant -o jsonpath='{.spec.ports[0].nodePort}')
+    ```
+  </Tab>
+  <Tab title="Ingress">
+    To expose KBS using Ingress, set the required environment variables and apply the Ingress manifest:
+
+    ```bash
+    export KBS_INGRESS_CLASS="REPLACE_ME"
+    export CLUSTER_SPECIFIC_DNS_ZONE="REPLACE_ME"
+    export KBS_INGRESS_HOST="kbs.${CLUSTER_SPECIFIC_DNS_ZONE}"
+
+    pushd kbs/config/kubernetes/overlays
+    envsubst <ingress.yaml >ingress.yaml.tmp && mv ingress.yaml.tmp ingress.yaml
+    kustomize edit add resource ingress.yaml
+    popd
+    ```
+
+    For AKS with the `approuting` add-on:
+    - Set `KBS_INGRESS_CLASS="webapprouting.kubernetes.azure.com"`
+    - Set `CLUSTER_SPECIFIC_DNS_ZONE` to your managed DNS zone name
+  </Tab>
+</Tabs>
+
+## Using a non-release image
+
+To deploy KBS with a staging image rather than the latest release, use `kustomize` to override the image:
+
+```bash
+pushd kbs/config/kubernetes/base
+kustomize edit set image kbs-container-image=ghcr.io/confidential-containers/staged-images/kbs:65ee7e1acccd13dcb515058e71c5f8bfb4281e35
+popd
+```
+
+Available image tags are listed in the [CoCo packages listing](https://github.com/orgs/confidential-containers/packages?repo_name=trustee).
+
+## Deleting the deployment
+
+```bash
+kubectl delete -k kbs/config/kubernetes/overlays/
+```
+
+For IBM Secure Execution:
+
+```bash
+kubectl delete -k kbs/config/kubernetes/overlays/ibm-se/ && kubectl delete pv test-local-pv
+```

@@ -1,0 +1,611 @@
+---
+title: "Configuration reference"
+description: "Reference for the KBS TOML configuration file, covering all sections and properties."
+---
+
+KBS is configured through a TOML file. The file path is passed to the KBS binary with the `-c` / `--config-file` flag or the `KBS_CONFIG_FILE` environment variable.
+
+```bash
+kbs --config-file /path/to/kbs-config.toml
+```
+
+<Note>
+  JSON and YAML formats are also supported by the underlying `config` crate. This reference uses TOML.
+</Note>
+
+## `[http_server]`
+
+Controls the KBS HTTP server.
+
+<ParamField path="sockets" type="string[]" default='["127.0.0.1:8080"]'>
+  One or more sockets for the server to listen on.
+</ParamField>
+
+<ParamField path="insecure_http" type="boolean" default="false">
+  Disable TLS for the KBS HTTP endpoint. Set to `true` for local development only.
+</ParamField>
+
+<ParamField path="private_key" type="string">
+  Path to a PEM-format private key file for HTTPS. Required when `insecure_http` is `false`.
+</ParamField>
+
+<ParamField path="certificate" type="string">
+  Path to a PEM-format certificate file for HTTPS. Required when `insecure_http` is `false`.
+</ParamField>
+
+<ParamField path="payload_request_size" type="integer" default="2">
+  Maximum request payload size in megabytes.
+</ParamField>
+
+<ParamField path="worker_count" type="integer" default="number of logical CPU cores">
+  Number of HTTP actix worker threads.
+</ParamField>
+
+```toml
+[http_server]
+sockets = ["0.0.0.0:8080"]
+insecure_http = false
+private_key = "/etc/kbs-private.key"
+certificate = "/etc/kbs-cert.pem"
+payload_request_size = 2
+```
+
+## `[attestation_token]`
+
+Controls how KBS verifies attestation tokens included in resource requests.
+
+<ParamField path="trusted_jwk_sets" type="string[]" default="[]">
+  URLs (`file://` or `https://`) pointing to trusted JWK Sets for token signature verification. Used with attestation services that embed a `kid` field, such as Intel Trust Authority.
+</ParamField>
+
+<ParamField path="trusted_certs_paths" type="string[]" default="[]">
+  Paths to PEM-format certificate files trusted for attestation token verification. Used to verify the `x5c` certificate chain in JWTs from CoCo AS.
+</ParamField>
+
+<ParamField path="extra_teekey_paths" type="string[]" default="[]">
+  Additional paths within the JWT body to the TEE public key. Example: `/attester_runtime_data/tee-pubkey`. By default, CoCo AS and Intel TA TEE public key paths are supported.
+</ParamField>
+
+<ParamField path="insecure_key" type="boolean" default="false">
+  When `true`, KBS does not verify the trustworthiness of the `jwk` field in the JWT. When `false`, KBS checks `trusted_certs_paths` and the `x5c` field to validate the key.
+</ParamField>
+
+```toml
+[attestation_token]
+trusted_certs_paths = ["/opt/confidential-containers/kbs/user-keys/ca-cert.pem"]
+insecure_key = false
+```
+
+## `[attestation_service]`
+
+Defines which attestation service KBS uses for the RCAR protocol. The `type` field selects the backend.
+
+<Tabs>
+  <Tab title="coco_as_builtin">
+    KBS runs the Attestation Service in-process. Available when the `coco-as-builtin` or `coco-as-builtin-no-verifier` feature is enabled.
+
+    <ParamField path="type" type="string" required>
+      Set to `"coco_as_builtin"`.
+    </ParamField>
+
+    <ParamField path="timeout" type="integer" default="5">
+      Maximum time in minutes for an attestation session.
+    </ParamField>
+
+    <ParamField path="rvps_config.type" type="string" default='"BuiltIn"'>
+      RVPS mode. Either `"BuiltIn"` (in-process) or `"GrpcRemote"` (connect to a remote RVPS server).
+    </ParamField>
+
+    <ParamField path="rvps_config.address" type="string" default='"127.0.0.1:50003"'>
+      Address of the remote RVPS server. Only applies when `rvps_config.type` is `"GrpcRemote"`.
+    </ParamField>
+
+    **`[attestation_service.attestation_token_broker]`**
+
+    <ParamField path="duration_min" type="integer" default="5">
+      Lifetime of the attestation result token in minutes.
+    </ParamField>
+
+    <ParamField path="issuer_name" type="string" default='"CoCo-Attestation-Service"'>
+      Issuer name embedded in the attestation result token.
+    </ParamField>
+
+    <ParamField path="developer_name" type="string" default='"https://confidentialcontainers.org"'>
+      Developer name used as part of the Verifier ID in the EAR token.
+    </ParamField>
+
+    <ParamField path="build_name" type="string">
+      Build name used as part of the Verifier ID in the EAR token. Defaults to a value derived from the Cargo package and AS version.
+    </ParamField>
+
+    <ParamField path="profile_name" type="string" default='"tag:github.com,2024:confidential-containers/Trustee"'>
+      Profile that describes the EAR token.
+    </ParamField>
+
+    **`[attestation_service.attestation_token_broker.signer]`** (optional)
+
+    When omitted, an ephemeral RSA key pair is generated at startup.
+
+    <ParamField path="key_path" type="string" required>
+      Path to a PEM-format RSA key pair file.
+    </ParamField>
+
+    <ParamField path="cert_url" type="string">
+      URL to a PEM-format RSA public key certificate chain.
+    </ParamField>
+
+    <ParamField path="cert_path" type="string">
+      Path to a PEM-format RSA public key certificate chain file.
+    </ParamField>
+
+    ```toml
+    [attestation_service]
+    type = "coco_as_builtin"
+
+    [attestation_service.attestation_token_broker]
+    duration_min = 5
+
+    [attestation_service.attestation_token_broker.signer]
+    key_path = "/opt/confidential-containers/kbs/user-keys/token.key"
+    cert_path = "/opt/confidential-containers/kbs/user-keys/token-cert-chain.pem"
+
+    [attestation_service.rvps_config]
+    type = "BuiltIn"
+    ```
+  </Tab>
+  <Tab title="coco_as_grpc">
+    KBS connects to a remote CoCo AS over gRPC. Available when the `coco-as-grpc` feature is enabled.
+
+    <ParamField path="type" type="string" required>
+      Set to `"coco_as_grpc"`.
+    </ParamField>
+
+    <ParamField path="timeout" type="integer" default="5">
+      Maximum time in minutes between the RCAR `auth` and `attest` requests.
+    </ParamField>
+
+    <ParamField path="as_addr" type="string" default='"http://127.0.0.1:50004"'>
+      URL of the remote CoCo AS gRPC endpoint.
+    </ParamField>
+
+    <ParamField path="pool_size" type="integer" default="100">
+      Maximum number of connections in the connection pool between KBS and CoCo AS.
+    </ParamField>
+
+    ```toml
+    [attestation_service]
+    type = "coco_as_grpc"
+    as_addr = "http://127.0.0.1:50004"
+    pool_size = 100
+    ```
+  </Tab>
+  <Tab title="intel_ta">
+    KBS connects to Intel Trust Authority for attestation. Available when the `intel-trust-authority-as` feature is enabled.
+
+    <ParamField path="type" type="string" required>
+      Set to `"intel_ta"`.
+    </ParamField>
+
+    <ParamField path="timeout" type="integer" default="5">
+      Maximum time in minutes between the RCAR `auth` and `attest` requests.
+    </ParamField>
+
+    <ParamField path="base_url" type="string" required>
+      Intel Trust Authority API URL.
+    </ParamField>
+
+    <ParamField path="api_key" type="string" required>
+      Intel Trust Authority API key.
+    </ParamField>
+
+    <ParamField path="certs_file" type="string" required>
+      URL to the Intel Trust Authority portal or path to a JWKS file used for token verification.
+    </ParamField>
+
+    <ParamField path="policy_ids" type="string[]" default="[]">
+      Comma-separated list of policy IDs defined in the ITA portal.
+    </ParamField>
+
+    <ParamField path="allow_unmatched_policy" type="boolean" default="false">
+      When `true`, policy matching is not required. If no `policy_ids` are specified, policy matching is not checked regardless of this setting.
+    </ParamField>
+
+    ```toml
+    [attestation_token]
+    trusted_jwk_sets = ["https://portal.trustauthority.intel.com"]
+
+    [attestation_service]
+    type = "intel_ta"
+    base_url = "https://api.trustauthority.intel.com"
+    api_key = "tBfd5kKX2x9ahbodKV1..."
+    certs_file = "https://portal.trustauthority.intel.com"
+    allow_unmatched_policy = true
+    ```
+  </Tab>
+</Tabs>
+
+## `[admin]`
+
+Configures the KBS admin API backend and role-based access.
+
+<ParamField path="type" type="string" default='"Simple"'>
+  Admin backend. One of:
+  - `"Simple"` — validates tokens using configured public keys.
+  - `"InsecureAllowAll"` — treats every request as authenticated with the `Anonymous` role. Do not use in production.
+  - `"DenyAll"` — rejects all admin tokens, blocking all admin interfaces.
+</ParamField>
+
+When `type = "Simple"`, define one or more personas under `[[admin.personas]]`:
+
+<ParamField path="id" type="string" required>
+  Identifier for this admin persona.
+</ParamField>
+
+<ParamField path="public_key_path" type="string" required>
+  Path to the public key file used to validate this admin's token.
+</ParamField>
+
+The `roles` field controls which endpoints each persona may access. When no roles are defined, all admins can access all admin endpoints. Each role entry has:
+
+<ParamField path="id" type="string" required>
+  The role this rule applies to.
+</ParamField>
+
+<ParamField path="allowed_endpoints" type="string" required>
+  A regular expression matching the allowed endpoints. Must start with `^/kbs` and end with `$`.
+</ParamField>
+
+```toml
+[admin]
+type = "Simple"
+
+[[admin.personas]]
+id = "admin"
+public_key_path = "/opt/confidential-containers/kbs/user-keys/public.pub"
+```
+
+## `[storage_backend]`
+
+Unified storage configuration for all persistent storage in KBS, including the KBS policy engine, resource plugin, built-in AS, and built-in RVPS.
+
+When omitted, in-memory storage is used and data is not persisted across restarts.
+
+<ParamField path="storage_type" type="string" required>
+  Storage backend type. Currently supported: `"LocalFs"`.
+</ParamField>
+
+<ParamField path="backends.local_fs.dir_path" type="string" required>
+  Directory path for local filesystem storage. Required when `storage_type = "LocalFs"`.
+</ParamField>
+
+**Storage namespaces**
+
+KBS creates the following namespaces within the configured storage backend:
+
+| Namespace | Component | Contents |
+|---|---|---|
+| `kbs` | KBS Policy Engine | KBS resource policy (`resource-policy` key) |
+| `repository` | Resource Plugin | Secret resources |
+| `attestation-service-policy` | Built-in AS | EAR policies |
+| `reference-value` | Built-in AS RVPS | Reference values |
+
+```toml
+[storage_backend]
+storage_type = "LocalFs"
+
+[storage_backend.backends.local_fs]
+dir_path = "/opt/confidential-containers/storage"
+```
+
+## `[[plugins]]`
+
+KBS supports multiple plugin sections. Use the `name` field to select the plugin.
+
+### Resource plugin
+
+<ParamField path="name" type="string" required>
+  Set to `"resource"`.
+</ParamField>
+
+<ParamField path="type" type="string" default='"kvstorage"'>
+  Storage backend for resources. One of `"kvstorage"`, `"Aliyun"`, or `"Vault"`.
+</ParamField>
+
+<Tabs>
+  <Tab title="kvstorage (default)">
+    Uses the unified `[storage_backend]` with the `repository` namespace. No additional properties required.
+
+    ```toml
+    [[plugins]]
+    name = "resource"
+    type = "kvstorage"
+    ```
+  </Tab>
+  <Tab title="Aliyun KMS">
+    <ParamField path="client_key" type="string" required>
+      KMS instance AAP client key JSON, e.g. `{"KeyId": "KA..", "PrivateKeyData": "MIIJqwI..."}`.
+    </ParamField>
+
+    <ParamField path="kms_instance_id" type="string" required>
+      KMS instance ID, e.g. `kst-shh668f7...`.
+    </ParamField>
+
+    <ParamField path="password" type="string" required>
+      AAP client key password.
+    </ParamField>
+
+    <ParamField path="cert_pem" type="string" required>
+      CA certificate for the KMS instance in PEM format.
+    </ParamField>
+
+    ```toml
+    [[plugins]]
+    name = "resource"
+    type = "Aliyun"
+    client_key = '{"KeyId": "KA..", "PrivateKeyData": "MIIJqwI..."}'
+    kms_instance_id = "kst-shh668f7..."
+    password = "8f9989c18d27..."
+    cert_pem = "-----BEGIN CERTIFICATE-----\n..."
+    ```
+  </Tab>
+  <Tab title="HashiCorp Vault">
+    <ParamField path="vault_url" type="string" required>
+      Vault server URL (HTTP or HTTPS).
+    </ParamField>
+
+    <ParamField path="token" type="string" required>
+      Vault authentication token. Must have read/write permissions on the configured mount path.
+    </ParamField>
+
+    <ParamField path="mount_path" type="string" default='"secret"'>
+      Vault KV v1 mount path.
+    </ParamField>
+
+    <ParamField path="verify_ssl" type="boolean" default="false">
+      Enable SSL certificate verification.
+    </ParamField>
+
+    <ParamField path="ca_certs" type="string[]">
+      Paths to custom CA certificate files for self-signed or enterprise CA certificates.
+    </ParamField>
+
+    ```toml
+    [[plugins]]
+    name = "resource"
+    type = "Vault"
+    vault_url = "http://vault.example.com:8200"
+    token = "hvs.your-vault-token-here"
+    mount_path = "secret"
+    verify_ssl = false
+    ```
+  </Tab>
+</Tabs>
+
+### Nebula CA plugin
+
+<ParamField path="name" type="string" required>
+  Set to `"nebula-ca"`.
+</ParamField>
+
+<ParamField path="nebula_cert_bin_path" type="string">
+  Path to the `nebula-cert` binary. If not set, `nebula-cert` is searched in `$PATH`.
+</ParamField>
+
+<ParamField path="work_dir" type="string" default='"/opt/confidential-containers/kbs/nebula-ca"'>
+  Plugin working directory. Requires read/write permission. The CA key and certificate are stored at `${work_dir}/ca/ca.key` and `${work_dir}/ca/ca.crt`.
+</ParamField>
+
+**`[plugins.self_signed_ca]`** (optional)
+
+When the CA key and certificate do not exist in `work_dir`, the plugin generates them using these properties:
+
+<ParamField path="name" type="string" default='"Trustee Nebula CA plugin"'>
+  Name of the certificate authority.
+</ParamField>
+
+<ParamField path="curve" type="string" default='"25519"'>
+  EdDSA/ECDSA curve. One of `"25519"` or `"P256"`.
+</ParamField>
+
+<ParamField path="duration" type="string" default='"8760h0m0s"'>
+  Certificate validity duration. Valid time units: `h` (hours), `m` (minutes), `s` (seconds).
+</ParamField>
+
+<ParamField path="groups" type="string" default='""'>
+  Comma-separated list of groups. Limits which groups subordinate certificates may use.
+</ParamField>
+
+<ParamField path="ips" type="string" default='""'>
+  Comma-separated list of IPv4 addresses and networks in CIDR notation. Limits which IP addresses subordinate certificates may use.
+</ParamField>
+
+<ParamField path="subnets" type="string" default='""'>
+  Comma-separated list of IPv4 addresses and networks in CIDR notation. Limits which subnets subordinate certificates may use.
+</ParamField>
+
+<ParamField path="argon_iterations" type="integer" default="1">
+  Argon2 iterations parameter for the encrypted private key passphrase.
+</ParamField>
+
+<ParamField path="argon_memory" type="integer" default="2097152">
+  Argon2 memory parameter (in KiB) for the encrypted private key passphrase.
+</ParamField>
+
+<ParamField path="argon_parallelism" type="integer" default="4">
+  Argon2 parallelism parameter for the encrypted private key passphrase.
+</ParamField>
+
+<ParamField path="out_qr" type="string">
+  Path to write a QR code image (PNG) of the certificate.
+</ParamField>
+
+```toml
+[[plugins]]
+name = "nebula-ca"
+
+[plugins.self_signed_ca]
+duration = "8760h0m0s"
+curve = "25519"
+groups = "server,ssh"
+ips = "192.168.100.10/24,192.168.100.15/24"
+```
+
+## Complete examples
+
+### Built-in CoCo AS with local filesystem storage
+
+```toml
+[http_server]
+sockets = ["0.0.0.0:8080"]
+insecure_http = true
+
+[admin]
+type = "InsecureAllowAll"
+
+[attestation_token]
+
+[storage_backend]
+storage_type = "LocalFs"
+
+[storage_backend.backends.local_fs]
+dir_path = "/opt/confidential-containers/storage"
+
+[attestation_service]
+type = "coco_as_builtin"
+
+[attestation_service.attestation_token_broker]
+duration_min = 5
+
+[attestation_service.rvps_config]
+type = "BuiltIn"
+
+[[plugins]]
+name = "resource"
+type = "kvstorage"
+```
+
+### Remote CoCo AS over gRPC
+
+```toml
+[http_server]
+insecure_http = true
+
+[admin]
+type = "InsecureAllowAll"
+
+[attestation_service]
+type = "coco_as_grpc"
+as_addr = "http://127.0.0.1:50004"
+
+[storage_backend]
+storage_type = "LocalFs"
+
+[storage_backend.backends.local_fs]
+dir_path = "/opt/confidential-containers/storage"
+
+[[plugins]]
+name = "resource"
+type = "kvstorage"
+```
+
+### Intel Trust Authority
+
+```toml
+[http_server]
+sockets = ["0.0.0.0:8080"]
+private_key = "/etc/kbs-private.key"
+certificate = "/etc/kbs-cert.pem"
+insecure_http = false
+payload_request_size = 2
+
+[attestation_token]
+trusted_jwk_sets = ["https://portal.trustauthority.intel.com"]
+
+[attestation_service]
+type = "intel_ta"
+base_url = "https://api.trustauthority.intel.com"
+api_key = "tBfd5kKX2x9ahbodKV1..."
+certs_file = "https://portal.trustauthority.intel.com"
+allow_unmatched_policy = true
+
+[admin]
+type = "Simple"
+
+[[admin.personas]]
+id = "admin"
+public_key_path = "/etc/kbs-admin.pub"
+
+[storage_backend]
+storage_type = "LocalFs"
+
+[storage_backend.backends.local_fs]
+dir_path = "/opt/confidential-containers/storage"
+
+[[plugins]]
+name = "resource"
+type = "kvstorage"
+```
+
+### Nebula CA plugin with built-in CoCo AS
+
+```toml
+[http_server]
+sockets = ["0.0.0.0:8080"]
+insecure_http = true
+
+[admin]
+type = "InsecureAllowAll"
+
+[attestation_token]
+
+[attestation_service]
+type = "coco_as_builtin"
+
+[attestation_service.attestation_token_broker]
+duration_min = 5
+
+[attestation_service.rvps_config]
+type = "BuiltIn"
+
+[storage_backend]
+storage_type = "LocalFs"
+
+[storage_backend.backends.local_fs]
+dir_path = "/opt/confidential-containers/storage"
+
+[[plugins]]
+name = "resource"
+type = "kvstorage"
+
+[[plugins]]
+name = "nebula-ca"
+```
+
+### Passport mode (resource KBS)
+
+```toml
+[http_server]
+sockets = ["127.0.0.1:50002"]
+insecure_http = true
+
+[admin]
+type = "InsecureAllowAll"
+
+[[admin.personas]]
+id = "admin"
+public_key_path = "./work/kbs.pem"
+
+[attestation_token]
+trusted_certs_paths = ["./work/ca-cert.pem"]
+insecure_key = false
+
+[storage_backend]
+storage_type = "LocalFs"
+
+[storage_backend.backends.local_fs]
+dir_path = "./work/storage"
+
+[[plugins]]
+name = "resource"
+type = "kvstorage"
+```

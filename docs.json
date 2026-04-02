@@ -1,122 +1,106 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Trustee",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#51af92",
+    "light": "#161152",
+    "dark": "#dfeee6"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "https://media.brand.dev/d126de7d-9b3d-4e57-a60d-59d04f8c759a.png",
+  "logo": {
+    "light": "https://media.brand.dev/f1dceaba-62cd-4966-bff5-4289d077ea83.svg",
+    "dark": "https://media.brand.dev/f1dceaba-62cd-4966-bff5-4289d077ea83.svg"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/confidential-containers/trustee"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/confidential-containers/trustee"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "architecture"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Deployment",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "deployment/docker-compose",
+              "deployment/kubernetes",
+              "deployment/configuration"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Key Broker Service",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "kbs/overview",
+              "kbs/attestation-modes",
+              "kbs/resource-management",
+              "kbs/policies",
+              "kbs/https-tls"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Attestation Service",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "attestation-service/overview",
+              "attestation-service/verifier-drivers",
+              "attestation-service/attestation-token",
+              "attestation-service/policy-engine"
+            ]
+          },
+          {
+            "group": "Reference Value Provider",
+            "pages": [
+              "rvps/overview",
+              "rvps/provenance-formats",
+              "rvps/storage-backends"
+            ]
+          },
+          {
+            "group": "Tools & CLI",
+            "pages": [
+              "tools/kbs-client",
+              "tools/trustee-cli"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "KBS HTTP API",
             "pages": [
-              "api-reference/introduction"
+              "api/overview",
+              "api/attestation",
+              "api/resources",
+              "api/policies"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "gRPC Services",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/grpc-attestation-service",
+              "api/grpc-reference-value"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

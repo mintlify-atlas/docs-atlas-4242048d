@@ -1,0 +1,223 @@
+---
+title: "Resource management"
+description: "How the KBS stores, uploads, and delivers secret resources to confidential guests."
+---
+
+The KBS stores confidential resources—encryption keys, certificates, configuration secrets—and delivers them to attested guests in encrypted form. This page explains the resource path format, how to upload and retrieve resources using `kbs-client`, the JWE response format, available storage backends, and the admin API.
+
+## Resource path format
+
+Every resource in the KBS is addressed by a three-part path:
+
+```
+/kbs/v0/resource/{repository}/{type}/{tag}
+```
+
+| Segment | Description |
+|---------|-------------|
+| `repository` | Groups related resources, analogous to a container image repository name. Chosen freely by the operator. |
+| `type` | Distinguishes different categories of resources within a repository. |
+| `tag` | Identifies a specific resource instance within a type. |
+
+For example, the path `default/test/dummy` refers to a resource with repository `default`, type `test`, and tag `dummy`.
+
+## Uploading resources
+
+Resources are uploaded using the `kbs-client` CLI with admin authentication. The KBS verifies the admin identity using a private-key-signed JWT.
+
+<Steps>
+  <Step title="Generate an admin key pair">
+    ```bash
+    openssl genpkey -algorithm ed25519 > config/private.key
+    openssl pkey -in config/private.key -pubout -out config/public.pub
+    ```
+
+    Configure the KBS to accept this public key under `[admin]`. See [deployment configuration](/deployment/configuration) for details.
+  </Step>
+  <Step title="Create the resource file">
+    ```bash
+    cat > test/dummy_data << EOF
+    1234567890abcde
+    EOF
+    ```
+  </Step>
+  <Step title="Upload with kbs-client">
+    ```bash
+    kbs-client --url http://127.0.0.1:8080 \
+      config \
+      --auth-private-key config/private.key \
+      set-resource \
+      --resource-file test/dummy_data \
+      --path default/test/dummy
+    ```
+
+    On success the CLI prints `Set resource success`.
+  </Step>
+</Steps>
+
+## Retrieving resources
+
+A guest running in a TEE retrieves resources after completing the RCAR attestation handshake. If you run `kbs-client` outside a TEE, the sample attester is used. The default resource policy rejects sample evidence; update the policy to `allow_all.rego` for local testing.
+
+```bash
+kbs-client --url http://127.0.0.1:8080 get-resource --path default/test/dummy
+```
+
+## JWE encrypted response format
+
+The KBS never returns resources in plaintext. All resource responses use the [JSON Web Encryption (JWE)](https://www.rfc-editor.org/rfc/rfc7516) flattened serialization format:
+
+```json
+{
+  "protected": "<base64url JOSE header>",
+  "encrypted_key": "<base64url encrypted symmetric key>",
+  "aad": "<base64url additional authenticated data>",
+  "iv": "<base64url initialization vector>",
+  "ciphertext": "<base64url encrypted resource>",
+  "tag": "<base64url authentication tag>"
+}
+```
+
+- `protected.alg` — Algorithm used to encrypt the symmetric key. Matches the TEE public key algorithm submitted during attestation.
+- `protected.enc` — Algorithm used to encrypt the resource payload.
+- `encrypted_key` — The symmetric key, encrypted with the guest's hardware-generated public key. Only the guest's TEE can decrypt it.
+- `ciphertext` — The encrypted resource content.
+
+The guest's TEE private key never leaves the hardware boundary. The KBS can therefore only deliver the resource to the specific guest instance that produced the key.
+
+## Storage backends
+
+<Tabs>
+  <Tab title="Local file system (default)">
+    The `LocalFs` backend stores each resource as a file on the local filesystem. It is always available and requires no additional dependencies.
+
+    The file path to URL mapping is:
+
+    | File path | Resource URL |
+    |-----------|--------------|
+    | `<KBS_REPOSITORY_DIR>/<repository>/<type>/<tag>` | `/kbs/v0/resource/<repository>/<type>/<tag>` |
+
+    The default root directory is `/opt/confidential-containers/kbs/repository`.
+
+    Configure the backend in `kbs-config.toml`:
+
+    ```toml
+    [storage_backend]
+    storage_type = "LocalFs"
+
+    [storage_backend.backends.local_fs]
+    dir_path = "/opt/confidential-containers/storage"
+
+    [[plugins]]
+    name = "resource"
+    type = "kvstorage"
+    ```
+  </Tab>
+  <Tab title="Aliyun KMS">
+    [Alibaba Cloud KMS](https://www.alibabacloud.com/en/product/kms) stores resources as [generic secrets](https://www.alibabacloud.com/help/en/kms/user-guide/manage-and-use-generic-secrets) in a KMS instance.
+
+    <Note>
+      When using Aliyun KMS, the `repository` and `type` segments of the resource path are ignored. Only the `tag` is used as the generic secret name.
+    </Note>
+
+    Enable the Aliyun feature at build time:
+
+    ```bash
+    make background-check-kbs ALIYUN=true
+    ```
+
+    Configure the resource plugin:
+
+    ```toml
+    [[plugins]]
+    name = "resource"
+    type = "Aliyun"
+    client_key = '{"KeyId": "KA..", "PrivateKeyData": "MIIJqwI..."}'
+    kms_instance_id = "kst-shh668f7..."
+    password = "8f9989c18d27..."
+    cert_pem = "-----BEGIN CERTIFICATE----- ..."
+    ```
+
+    The credentials (`client_key`, `password`, `cert_pem`) are found in the KMS instance's Application Access Point (AAP).
+  </Tab>
+  <Tab title="HashiCorp Vault">
+    The Vault backend stores resources in a [Vault KV v1 secrets engine](https://developer.hashicorp.com/vault/docs/secrets/kv/kv-v1).
+
+    Enable the Vault feature at build time:
+
+    ```bash
+    make background-check-kbs VAULT=true
+    ```
+
+    Configure the resource plugin:
+
+    ```toml
+    [[plugins]]
+    name = "resource"
+    type = "Vault"
+    vault_url = "https://vault.example.com:8200"
+    token = "hvs.XXXXXXXX"
+    mount_path = "secret"
+    verify_ssl = true
+    ca_certs = ["/etc/ssl/ca-bundle.pem"]
+    ```
+
+    | Property | Required | Default | Description |
+    |----------|----------|---------|-------------|
+    | `vault_url` | Yes | — | Vault server URL. |
+    | `token` | Yes | — | Vault authentication token. |
+    | `mount_path` | No | `"secret"` | KV v1 mount path. |
+    | `verify_ssl` | No | `false` | Enable SSL verification. |
+    | `ca_certs` | No | None | Paths to custom CA certificate files. |
+  </Tab>
+</Tabs>
+
+## Admin API
+
+The KBS exposes an HTTP admin API for managing resources and policies. All admin endpoints require an authenticated request: the caller must present a JWT signed with the admin private key.
+
+Upload a resource:
+
+```bash
+kbs-client --url http://127.0.0.1:8080 \
+  config \
+  --auth-private-key config/private.key \
+  set-resource \
+  --resource-file /path/to/secret \
+  --path myrepo/keys/secret1
+```
+
+Update the resource policy:
+
+```bash
+kbs-client --url http://127.0.0.1:8080 \
+  config \
+  --auth-private-key config/private.key \
+  set-resource-policy \
+  --policy-file sample_policies/allow_all.rego
+```
+
+Update the attestation policy:
+
+```bash
+kbs-client --url http://127.0.0.1:8080 \
+  config \
+  --auth-private-key config/private.key \
+  set-attestation-policy \
+  --policy-file /path/to/policy.rego
+```
+
+<Info>
+  The admin backend is configured under `[admin]` in `kbs-config.toml`. The default `Simple` backend validates the JWT against the public keys listed under `[[admin.personas]]`. Set `type = "InsecureAllowAll"` only for local development and testing.
+</Info>
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="Policies" icon="file-check" href="/kbs/policies">
+    Control which attestations may access which resources using OPA/Rego policies.
+  </Card>
+  <Card title="kbs-client" icon="terminal" href="/tools/kbs-client">
+    Full reference for the kbs-client CLI tool.
+  </Card>
+</Columns>

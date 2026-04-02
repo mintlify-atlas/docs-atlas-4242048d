@@ -1,0 +1,247 @@
+---
+title: "Trustee CLI"
+description: "A unified command-line interface for running and administering a complete Trustee stack from a single binary."
+---
+
+The `trustee-cli` crate provides the `trustee` binary — a self-contained CLI that starts the Key Broker Service (with a built-in Attestation Service and RVPS) and handles initial key generation. It is designed to get a full Trustee stack running with minimal configuration.
+
+<Info>
+The `trustee` binary is the simplest way to run Trustee locally. It automatically generates authentication keys and a self-signed HTTPS certificate on first run. Use [`kbs-client`](/tools/kbs-client) to interact with a running Trustee instance.
+</Info>
+
+## When to use `trustee` vs `kbs-client`
+
+| Task | Tool |
+|---|---|
+| Start a local Trustee server | `trustee run` |
+| Generate an Ed25519 admin key pair | `trustee keygen` |
+| Upload resources or policies to a running KBS | `kbs-client config ...` |
+| Retrieve resources or perform attestation | `kbs-client get-resource` / `kbs-client attest` |
+
+## Building and installing
+
+<Steps>
+  <Step title="Build the binary">
+    ```bash
+    make -C tools/trustee-cli build
+    ```
+
+    This runs `cargo build -p trustee-cli --locked --release` and places the binary at `target/release/trustee`.
+
+    Cross-compilation to `aarch64` or `s390x` is supported on Debian-like systems:
+
+    ```bash
+    make -C tools/trustee-cli build ARCH=aarch64
+    ```
+  </Step>
+
+  <Step title="Install system-wide">
+    ```bash
+    sudo make -C tools/trustee-cli install
+    ```
+
+    The binary is installed to `/usr/local/bin/trustee` by default. Override with `INSTALL_DESTDIR`:
+
+    ```bash
+    sudo make -C tools/trustee-cli install INSTALL_DESTDIR=/usr/bin
+    ```
+  </Step>
+</Steps>
+
+Alternatively, build directly with Cargo:
+
+```bash
+cargo build -p trustee-cli --release
+```
+
+## Global flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--home <PATH>` | `~/.trustee` (non-root) or `/opt/confidential-containers` (root) | Directory used for storing configuration, keys, resources, and cached certificates. Can also be set with the `TRUSTEE_HOME` environment variable |
+
+## Commands
+
+### `trustee keygen`
+
+Generate a new Ed25519 key pair for authenticating administrative requests to the KBS.
+
+```
+trustee [--home <PATH>] keygen [-f <OUTPUT_FILE>]
+```
+
+| Flag | Description |
+|---|---|
+| `-f <OUTPUT_FILE>` | Path for the private key file. If omitted, the key is written to `<TRUSTEE_HOME>/key`. The public key is always written to `<OUTPUT_FILE>.pub` |
+
+**Example**
+
+Generate a key pair in the default home directory:
+
+```bash
+trustee keygen
+```
+
+Generate a key pair at a custom path:
+
+```bash
+trustee keygen -f /etc/trustee/auth_key
+```
+
+This creates two files:
+- `auth_key` — private key (PEM, permissions set to `0600`)
+- `auth_key.pub` — corresponding public key (PEM)
+
+<Warning>
+If the output file already exists, `keygen` returns an error rather than overwriting it.
+</Warning>
+
+---
+
+### `trustee run`
+
+Start the Trustee server. This launches the KBS with its integrated Attestation Service and RVPS.
+
+```
+trustee [--home <PATH>] run [OPTIONS]
+```
+
+| Flag | Description |
+|---|---|
+| `--config-file <PATH>` | Path to a KBS configuration file. If omitted, a default configuration is used |
+| `--allow-all` | Apply the built-in `allow_all` resource policy on startup. **Development only.** |
+
+**Automatic key and certificate management**
+
+When `--config-file` is not provided (or the config does not specify them), `trustee run` automatically:
+
+1. Generates an Ed25519 authentication key pair in `<TRUSTEE_HOME>/auth_key` and `<TRUSTEE_HOME>/auth_key.pub` if they do not already exist.
+2. Generates a self-signed RSA 2048 HTTPS certificate in `<TRUSTEE_HOME>/https_key` and caches the certificate in `<TRUSTEE_HOME>/https_cert_cache.pem`.
+
+The server listens on HTTPS by default. Use a KBS config file with `insecure_http = true` to disable TLS for local testing.
+
+Resource files are stored under `<TRUSTEE_HOME>`.
+
+**Examples**
+
+<Tabs>
+  <Tab title="Default (development)">
+    Start Trustee with auto-generated keys, a self-signed certificate, and the default deny-all resource policy:
+
+    ```bash
+    trustee run
+    ```
+
+    On first run you will see log output indicating that the auth key pair and HTTPS certificate were created in `~/.trustee/`.
+  </Tab>
+  <Tab title="Allow-all policy">
+    Start Trustee and immediately apply an allow-all resource policy. This is useful during development when you do not yet have real TEE evidence:
+
+    ```bash
+    trustee run --allow-all
+    ```
+
+    <Warning>
+    Do not use `--allow-all` in production. It bypasses attestation-based access control.
+    </Warning>
+  </Tab>
+  <Tab title="Custom config file">
+    Start Trustee with a specific configuration file:
+
+    ```bash
+    trustee run --config-file /etc/trustee/kbs-config.toml
+    ```
+
+    See [Deployment configuration](/deployment/configuration) for the full configuration reference.
+  </Tab>
+  <Tab title="Custom home directory">
+    Use a custom home directory to isolate data and keys:
+
+    ```bash
+    trustee --home /srv/trustee run
+    ```
+
+    Or via environment variable:
+
+    ```bash
+    TRUSTEE_HOME=/srv/trustee trustee run
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Full workflow example
+
+The following sequence starts Trustee, uploads a resource, and retrieves it using `kbs-client`.
+
+<Steps>
+  <Step title="Start Trustee">
+    ```bash
+    trustee run --allow-all &
+    ```
+
+    Wait for the log line indicating the server is ready.
+  </Step>
+
+  <Step title="Find the generated public key">
+    The auto-generated admin public key is at `~/.trustee/auth_key.pub`. The corresponding private key is at `~/.trustee/auth_key`.
+  </Step>
+
+  <Step title="Upload a resource">
+    ```bash
+    echo "my-secret-value" > /tmp/my_resource
+
+    kbs-client \
+      --url https://127.0.0.1:8080 \
+      --cert-file ~/.trustee/https_cert_cache.pem \
+      config --auth-private-key ~/.trustee/auth_key \
+      set-resource \
+      --resource-file /tmp/my_resource \
+      --path default/test/my_resource
+    ```
+  </Step>
+
+  <Step title="Retrieve the resource">
+    ```bash
+    kbs-client \
+      --url https://127.0.0.1:8080 \
+      --cert-file ~/.trustee/https_cert_cache.pem \
+      get-resource \
+      --path default/test/my_resource
+    ```
+
+    The resource bytes are printed as base64-encoded output.
+  </Step>
+</Steps>
+
+---
+
+## Logging
+
+Control log verbosity with the `RUST_LOG` environment variable:
+
+```bash
+RUST_LOG=debug trustee run
+```
+
+By default, the log level is `info`.
+
+---
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="KBS client" icon="terminal" href="/tools/kbs-client">
+    CLI and Rust SDK for interacting with a running KBS.
+  </Card>
+  <Card title="Deployment configuration" icon="sliders" href="/deployment/configuration">
+    Full reference for KBS configuration files.
+  </Card>
+  <Card title="Docker Compose deployment" icon="docker" href="/deployment/docker-compose">
+    Run the full Trustee stack with Docker Compose.
+  </Card>
+  <Card title="KBS policies" icon="shield" href="/kbs/policies">
+    Attestation and resource policy reference.
+  </Card>
+</CardGroup>

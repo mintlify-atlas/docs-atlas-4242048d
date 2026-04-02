@@ -1,0 +1,181 @@
+---
+title: "Reference Value Provider gRPC API"
+description: "gRPC service for querying and registering reference values used in TEE evidence verification. Defined in protos/reference.proto."
+---
+
+The Reference Value Provider Service (RVPS) stores reference values — known-good measurements for TEE platform components. During attestation, the Attestation Service queries the RVPS to compare TEE evidence measurements against these expected values.
+
+**Default address:** `localhost:50003`
+
+**Proto package:** `reference`
+
+**Service name:** `reference.ReferenceValueProviderService`
+
+<Info>
+  The full proto definition is at `protos/reference.proto` in the Trustee repository. Pass `-import-path ../protos -proto ../protos/reference.proto` to `grpcurl` when calling this service.
+</Info>
+
+---
+
+## Service definition
+
+```protobuf
+service ReferenceValueProviderService {
+    rpc QueryReferenceValue(ReferenceValueQueryRequest) returns (ReferenceValueQueryResponse) {};
+    rpc RegisterReferenceValue(ReferenceValueRegisterRequest) returns (ReferenceValueRegisterResponse) {};
+}
+```
+
+---
+
+## QueryReferenceValue
+
+Look up a reference value by its ID.
+
+### Request: `ReferenceValueQueryRequest`
+
+<ParamField body="reference_value_id" type="string" required>
+  The identifier of the reference value to query. This is typically a namespaced path, for example `"sample/digest"` or `"tdx/mr_td/my-image"`.
+</ParamField>
+
+### Response: `ReferenceValueQueryResponse`
+
+<ResponseField name="reference_value_results" type="string">
+  The reference value result as a string, if found. This field is optional — it is absent when no matching reference value exists.
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="grpcurl">
+```bash
+grpcurl \
+  -plaintext \
+  -import-path ./protos \
+  -proto ./protos/reference.proto \
+  -d '{
+    "reference_value_id": "sample/digest"
+  }' \
+  localhost:50003 \
+  reference.ReferenceValueProviderService/QueryReferenceValue
+```
+  </Tab>
+  <Tab title="Response">
+```json
+{
+  "referenceValueResults": "{\"name\":\"sample\",\"hash-value\":[{\"name\":\"sha256\",\"value\":\"a1b2c3d4...\"}]}"
+}
+```
+  </Tab>
+</Tabs>
+
+---
+
+## RegisterReferenceValue
+
+Register a new reference value or update an existing one.
+
+### Request: `ReferenceValueRegisterRequest`
+
+<ParamField body="message" type="string" required>
+  The reference value payload as a JSON string. The exact schema depends on the provenance format configured in the RVPS.
+
+  A common format includes:
+
+  | Field | Description |
+  |---|---|
+  | `name` | Reference value name/identifier |
+  | `expired` | Expiry timestamp (ISO 8601) |
+  | `hash-value` | Array of `{ "name": "<algorithm>", "value": "<hex-digest>" }` objects |
+</ParamField>
+
+### Response: `ReferenceValueRegisterResponse`
+
+Empty response on success.
+
+### Example
+
+<Tabs>
+  <Tab title="grpcurl">
+```bash
+grpcurl \
+  -plaintext \
+  -import-path ./protos \
+  -proto ./protos/reference.proto \
+  -d '{
+    "message": "{\"name\":\"sample\",\"expired\":\"2030-01-01T00:00:00Z\",\"hash-value\":[{\"name\":\"sha256\",\"value\":\"a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd\"}]}"
+  }' \
+  localhost:50003 \
+  reference.ReferenceValueProviderService/RegisterReferenceValue
+```
+  </Tab>
+  <Tab title="Message payload (unescaped)">
+```json
+{
+  "name": "sample",
+  "expired": "2030-01-01T00:00:00Z",
+  "hash-value": [
+    {
+      "name": "sha256",
+      "value": "a1b2c3d4e5f6789012345678901234567890123456789012345678901234abcd"
+    }
+  ]
+}
+```
+  </Tab>
+</Tabs>
+
+<Tip>
+  You can also register reference values through the KBS admin HTTP API at `POST /kbs/v0/reference-value`. The KBS proxies these requests to the RVPS. See [policy endpoints](/api/policies#post-kbs-v0-reference-value) for details.
+</Tip>
+
+---
+
+## Running the RVPS
+
+<Tabs>
+  <Tab title="Docker Compose">
+```bash
+# The docker-compose.yml in the Trustee repo starts RVPS on port 50003
+docker-compose up rvps
+```
+  </Tab>
+  <Tab title="Binary">
+```bash
+# Start RVPS on default address
+rvps --socket localhost:50003
+
+# With debug logging
+RUST_LOG=debug rvps --socket localhost:50003
+```
+  </Tab>
+</Tabs>
+
+The RVPS stores reference values in a local directory or PostgreSQL database depending on configuration. For storage backend options, see [RVPS storage backends](/rvps/storage-backends).
+
+---
+
+## Reference value format
+
+Reference values are stored as provenance messages. The RVPS parses these according to the configured provenance format. The most commonly used format includes:
+
+```json
+{
+  "name": "<value-name>",
+  "expired": "2030-01-01T00:00:00Z",
+  "hash-value": [
+    {
+      "name": "sha256",
+      "value": "<hex-encoded-digest>"
+    },
+    {
+      "name": "sha384",
+      "value": "<hex-encoded-digest>"
+    }
+  ]
+}
+```
+
+Multiple hash algorithms can be listed. The Attestation Service will use whichever algorithm matches its verification configuration.
+
+For all supported provenance formats, see [RVPS provenance formats](/rvps/provenance-formats).

@@ -1,0 +1,298 @@
+---
+title: "Attestation endpoints"
+description: "POST /auth and POST /attest implement the RCAR attestation protocol between a Key Broker Client and the KBS."
+---
+
+These two endpoints implement the **Request-Challenge-Attestation-Response (RCAR)** protocol. A client running inside a confidential guest calls `/auth` to begin attestation, then calls `/attest` with TEE evidence to receive an `AttestationToken`.
+
+<Info>
+  For background on the full protocol flow, including how the session cookie and attestation token are used for subsequent resource requests, see the [API overview](/api/overview).
+</Info>
+
+---
+
+## POST /kbs/v0/auth
+
+Initiate attestation. The client sends a `Request` payload describing its TEE platform. The KBS responds with an attestation `Challenge` and sets a session cookie.
+
+This is step 1 of the RCAR protocol (**R**equest → **C**hallenge).
+
+### Request body
+
+<ParamField body="version" type="string" required>
+  KBS protocol version supported by the client. The KBS uses this to verify compatibility. Current version is `"0.1.1"`.
+</ParamField>
+
+<ParamField body="tee" type="string" required>
+  TEE platform type. Must be one of the values in the table below.
+</ParamField>
+
+<ParamField body="extra-params" type="object">
+  Optional TEE-specific parameters. For most platforms (TDX, SGX, SNP) this is an empty object. Some platforms use this field for Diffie-Hellman key exchange or other pre-attestation steps.
+</ParamField>
+
+#### TEE platform values
+
+| Value | Platform |
+|---|---|
+| `az-snp-vtpm` | Microsoft Azure AMD SNP vTPM |
+| `az-tdx-vtpm` | Microsoft Azure TDX vTPM |
+| `snp` | AMD SEV-SNP |
+| `sgx` | Intel SGX |
+| `tdx` | Intel TDX |
+| `cca` | Arm Confidential Compute Architecture |
+| `csv` | China Secure Virtualization (Hygon) |
+| `se` | IBM Z Secure Execution |
+| `hygondcu` | Hygon DCU |
+| `tpm` | Trusted Platform Module |
+| `nvidia` | NVIDIA Confidential Computing |
+| `sample` | Test/sample platform (not for production) |
+| `sampledevice` | Sample device (not for production) |
+
+<Warning>
+  The `sample` and `sampledevice` values are only for local development and testing. Production deployments should reject evidence from these TEE types via attestation policy.
+</Warning>
+
+### Response
+
+#### 200 — Challenge
+
+The KBS sets a `kbs-session-id` cookie and returns a `Challenge` payload.
+
+**Headers:**
+
+| Header | Example | Description |
+|---|---|---|
+| `Set-Cookie` | `kbs-session-id=1234` | Session identifier. Include this cookie in the subsequent `/attest` request. |
+
+**Body:**
+
+<ResponseField name="nonce" type="string" required>
+  Freshness nonce. The client must include this value in the `runtime-data` of its attestation evidence to prevent replay attacks.
+</ResponseField>
+
+<ResponseField name="extra-params" type="object">
+  Optional TEE-specific parameters from the KBS for platforms that require additional challenge data.
+</ResponseField>
+
+#### 400 — Unsupported request
+
+Returned when the request content or format is not supported (for example, an unrecognized `tee` value or incompatible protocol `version`).
+
+**Body:** [ErrorInformation](#error-information)
+
+### Example
+
+<Tabs>
+  <Tab title="curl">
+```bash
+curl -c cookies.txt \
+  -X POST http://<kbs>/kbs/v0/auth \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "version": "0.1.1",
+    "tee": "sample",
+    "extra-params": {}
+  }'
+```
+  </Tab>
+  <Tab title="Response">
+```json
+{
+  "nonce": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=",
+  "extra-params": {}
+}
+```
+  </Tab>
+</Tabs>
+
+---
+
+## POST /kbs/v0/attest
+
+Submit TEE evidence in response to the challenge. On success, the KBS returns an `AttestationToken` JWT.
+
+This is step 2 of the RCAR protocol (**A**ttestation → **R**esponse).
+
+### Cookie
+
+<ParamField path="kbs-session-id" type="string">
+  Session cookie set by `/auth`. Must be present in the request to correlate the evidence with the challenge.
+</ParamField>
+
+### Request body
+
+<ParamField body="tee-evidence" type="object" required>
+  Composite TEE evidence structure.
+
+  <Expandable title="tee-evidence properties">
+    <ParamField body="primary_evidence" type="object" required>
+      Primary TEE evidence. The format is determined by the TEE type and attestation service verifier. Typically a hardware-signed quote or report.
+    </ParamField>
+
+    <ParamField body="additional_evidence" type="string" required>
+      JSON string mapping TEE type to evidence pairs for secondary TEE devices. Set to `"{}"` if there are no secondary attesters.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="runtime-data" type="object" required>
+  Runtime data bound to the TEE evidence via a hash in the hardware report. Must contain:
+
+  <Expandable title="runtime-data properties">
+    <ParamField body="nonce" type="string" required>
+      The nonce from the `Challenge` response. Prevents replay attacks.
+    </ParamField>
+
+    <ParamField body="tee-pubkey" type="object" required>
+      Ephemeral JWK public key generated inside the TEE. The KBS uses this key to encrypt resources returned in subsequent requests. Can be RSA or EC format.
+
+      <Expandable title="RSA key (kty: RSA)">
+        <ParamField body="kty" type="string" required>
+          Key type. Must be `"RSA"`.
+        </ParamField>
+        <ParamField body="alg" type="string" required>
+          Algorithm, e.g. `"RSA1_5"` or `"RSA-OAEP"`.
+        </ParamField>
+        <ParamField body="n" type="string" required>
+          Base64url-encoded RSA key modulus.
+        </ParamField>
+        <ParamField body="e" type="string" required>
+          Base64url-encoded RSA key exponent.
+        </ParamField>
+      </Expandable>
+
+      <Expandable title="EC key (kty: EC)">
+        <ParamField body="kty" type="string" required>
+          Key type. Must be `"EC"`.
+        </ParamField>
+        <ParamField body="crv" type="string" required>
+          Elliptic curve name, e.g. `"P-256"` or `"P-384"`.
+        </ParamField>
+        <ParamField body="alg" type="string" required>
+          Algorithm, e.g. `"ECDH-ES"`.
+        </ParamField>
+        <ParamField body="x" type="string" required>
+          Base64url-encoded x coordinate of the public key point.
+        </ParamField>
+        <ParamField body="y" type="string" required>
+          Base64url-encoded y coordinate of the public key point.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="init-data" type="object">
+  Optional initialization data associated with the TEE instance. When present, its hash is checked against the value measured in the TEE evidence.
+
+  <Expandable title="init-data properties">
+    <ParamField body="format" type="string" required>
+      Format of the init data body. Supported values: `"json"`, `"toml"`.
+    </ParamField>
+
+    <ParamField body="body" type="string" required>
+      Plaintext init data contents, serialized in the format specified by `format`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Response
+
+#### 200 — Attestation token
+
+<ResponseField name="token" type="string" required>
+  A signed JWT (JSON Web Token) containing attestation results. The token is structured as three Base64url-encoded strings separated by dots: header, payload, and signature.
+
+  <Expandable title="Token header fields">
+    <ResponseField name="typ" type="string" required>
+      Token type. Always `"JWT"`.
+    </ResponseField>
+    <ResponseField name="alg" type="string" required>
+      Signature algorithm, e.g. `"RS256"` or `"RS384"`.
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Token payload fields">
+    <ResponseField name="exp" type="integer" required>
+      Token expiration time in seconds since the Unix epoch.
+    </ResponseField>
+    <ResponseField name="iat" type="integer" required>
+      Token issuance time in seconds since the Unix epoch.
+    </ResponseField>
+    <ResponseField name="iss" type="string" required>
+      Token issuer URL (the KBS address).
+    </ResponseField>
+    <ResponseField name="jwk" type="string" required>
+      RSA public key (JWK format) for verifying the token signature.
+    </ResponseField>
+    <ResponseField name="tee-pubkey" type="object" required>
+      The TEE public key submitted by the client in the `Attestation` request. Relying parties use this key to wrap symmetric encryption keys for resources delivered to the TEE.
+    </ResponseField>
+    <ResponseField name="tcb-status" type="string" required>
+      Parsed claims from the TEE evidence, including platform measurements.
+    </ResponseField>
+    <ResponseField name="evaluation-report" type="string" required>
+      Policy evaluation report from the Attestation Service.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+#### 401 — Unauthorized
+
+Returned when the session cookie is missing, invalid, or expired.
+
+**Body:** [ErrorInformation](#error-information)
+
+### Example
+
+<Tabs>
+  <Tab title="curl">
+```bash
+curl -b cookies.txt -c cookies.txt \
+  -X POST http://<kbs>/kbs/v0/attest \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tee-evidence": {
+      "primary_evidence": {},
+      "additional_evidence": "{}"
+    },
+    "runtime-data": {
+      "nonce": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=",
+      "tee-pubkey": {
+        "kty": "EC",
+        "crv": "P-256",
+        "alg": "ECDH-ES",
+        "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+        "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"
+      }
+    }
+  }'
+```
+  </Tab>
+  <Tab title="Response">
+```json
+{
+  "token": "eyJhbGciOiJSUzM4NCIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MDE2NzI5NjUsImlhdCI6MTcwMTY3MjY2NSwiaXNzIjoiaHR0cHM6Ly9teS1rYnMuaW8vIiwidGNiLXN0YXR1cyI6e30sImV2YWx1YXRpb24tcmVwb3J0Ijp7ImFsbG93Ijp0cnVlfX0.SIGNATURE"
+}
+```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Save the token from this response. You can use it as a Bearer token (`Authorization: Bearer <token>`) in resource requests instead of the session cookie, which is useful for longer-lived sessions or when accessing resources from a different client.
+</Tip>
+
+---
+
+## Error information
+
+All error responses use the [RFC 7807 Problem Details](https://www.rfc-editor.org/rfc/rfc7807) format:
+
+<ResponseField name="type" type="string" required>
+  A URI identifying the problem type: `https://github.com/confidential-containers/kbs/errors/<problem-type>`
+</ResponseField>
+
+<ResponseField name="detail" type="string" required>
+  A human-readable description of the specific error.
+</ResponseField>

@@ -1,0 +1,201 @@
+---
+title: "HTTPS and TLS"
+description: "Configure TLS for the KBS HTTP server to protect the attestation protocol and authenticate the KBS to guests."
+---
+
+HTTPS is the required transport for the KBS attestation protocol. The KBS implementation protocol specification mandates HTTPS for two reasons:
+
+1. **KBS identity authentication** — HTTPS gives guests a way to verify they are talking to the legitimate KBS and not an attacker impersonating it. Without this, an attacker could intercept the attestation handshake and deliver malicious resources.
+2. **Channel confidentiality** — HTTPS encrypts the attestation messages in transit.
+
+<Note>
+  HTTPS alone is not sufficient to protect resource confidentiality. Resources are additionally encrypted with the guest's hardware-generated TEE public key (JWE format), so only the attested guest can decrypt them even if TLS is terminated by an intermediary.
+</Note>
+
+## Configuring TLS in `kbs-config.toml`
+
+TLS is configured under the `[http_server]` section. Provide the paths to a PEM-encoded private key and certificate:
+
+```toml
+[http_server]
+sockets = ["0.0.0.0:8080"]
+private_key = "/etc/kbs-private.key"
+certificate = "/etc/kbs-cert.pem"
+insecure_http = false
+```
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `sockets` | String array | Addresses and ports to listen on. | `["127.0.0.1:8080"]` |
+| `insecure_http` | Boolean | Disable TLS. Set to `false` for production. | `false` |
+| `private_key` | String | Path to the PEM-encoded private key. | None |
+| `certificate` | String | Path to the PEM-encoded certificate. | None |
+
+<Warning>
+  Do not set `insecure_http = true` in production. Doing so disables TLS and removes the KBS identity guarantee that the protocol depends on.
+</Warning>
+
+You can also supply the key and certificate as command-line flags when starting the KBS binary:
+
+```bash
+kbs --config-file config/kbs-config.toml \
+  --private-key /etc/kbs-private.key \
+  --certificate /etc/kbs-cert.pem
+```
+
+## Self-signed certificates for testing
+
+For local development and testing you can generate a self-signed certificate. The KBS TLS is implemented using the OpenSSL crypto backend.
+
+<Steps>
+  <Step title="Create an OpenSSL configuration file">
+    ```bash
+    cat << EOF > localhost.conf
+    [req]
+    default_bits       = 2048
+    default_keyfile    = localhost.key
+    distinguished_name = req_distinguished_name
+    req_extensions     = req_ext
+    x509_extensions    = v3_ca
+
+    [req_distinguished_name]
+    countryName                 = Country Name (2 letter code)
+    countryName_default         = CN
+    stateOrProvinceName         = State or Province Name (full name)
+    stateOrProvinceName_default = Zhejiang
+    localityName                = Locality Name (eg, city)
+    localityName_default        = Hangzhou
+    organizationName            = Organization Name (eg, company)
+    organizationName_default    = localhost
+    organizationalUnitName      = organizationalunit
+    organizationalUnitName_default = Development
+    commonName                  = Common Name (e.g. server FQDN or YOUR name)
+    commonName_default          = localhost
+    commonName_max              = 64
+
+    [req_ext]
+    subjectAltName = @alt_names
+
+    [v3_ca]
+    subjectAltName = @alt_names
+
+    [alt_names]
+    DNS.1   = localhost
+    DNS.2   = 127.0.0.1
+    EOF
+    ```
+  </Step>
+  <Step title="Generate the private key and self-signed certificate">
+    ```bash
+    openssl req -x509 -nodes -days 365 \
+      -newkey rsa:2048 \
+      -keyout localhost.key \
+      -out localhost.crt \
+      -config localhost.conf \
+      -passin pass:
+    ```
+
+    This produces `localhost.key` (private key) and `localhost.crt` (self-signed certificate), both valid for 365 days.
+  </Step>
+  <Step title="Generate the admin key pair">
+    ```bash
+    openssl genpkey -algorithm ed25519 > private.key
+    openssl pkey -in private.key -pubout -out public.pub
+    ```
+  </Step>
+  <Step title="Write the KBS configuration">
+    ```bash
+    cat << EOF > kbs-config.toml
+    [http_server]
+    sockets = ["0.0.0.0:8080"]
+    private_key = "/etc/key.pem"
+    certificate = "/etc/cert.pem"
+    insecure_http = false
+
+    [[admin.admin_backend.Simple.personas]]
+    id = "admin"
+    public_key_path = "/etc/public.pub"
+
+    [attestation_token]
+    insecure_key = true
+
+    [attestation_service]
+    type = "coco_as_builtin"
+
+        [attestation_service.attestation_token_broker]
+        duration_min = 5
+
+        [attestation_service.rvps_config]
+        type = "BuiltIn"
+
+    [[plugins]]
+    name = "resource"
+    type = "LocalFs"
+    dir_path = "/opt/confidential-containers/kbs/repository"
+    EOF
+    ```
+  </Step>
+  <Step title="Start the KBS with Docker">
+    ```bash
+    docker run -it --rm \
+      -v $(pwd)/kbs-config.toml:/etc/kbs-config.toml \
+      -v $(pwd)/localhost.key:/etc/key.pem \
+      -v $(pwd)/localhost.crt:/etc/cert.pem \
+      -v $(pwd)/public.pub:/etc/public.pub \
+      --env RUST_LOG=debug \
+      -p 8080:8080 \
+      kbs:coco-as \
+      kbs --config-file /etc/kbs-config.toml
+    ```
+  </Step>
+  <Step title="Upload a resource with the client">
+    Pass the self-signed certificate to `kbs-client` so it can verify the KBS TLS identity:
+
+    ```bash
+    echo testdata > dummy_data
+    kbs-client --cert-file localhost.crt \
+      --url https://localhost:8080 \
+      config \
+      --auth-private-key private.key \
+      set-resource \
+      --resource-file dummy_data \
+      --path default/test/dummy
+    ```
+
+    The output `Set resource success` confirms the upload succeeded.
+  </Step>
+</Steps>
+
+<Warning>
+  The FQDN in the certificate's `commonName` and `subjectAltName` must match the hostname used in the client URL. The example above uses `localhost` throughout. Using a mismatched hostname will cause TLS verification to fail.
+</Warning>
+
+## Production certificate setup
+
+For production deployments, obtain a certificate from a trusted Certificate Authority (CA) rather than generating a self-signed one.
+
+```toml
+[http_server]
+sockets = ["0.0.0.0:8080"]
+private_key = "/etc/kbs-private.key"
+certificate = "/etc/kbs-cert.pem"
+insecure_http = false
+payload_request_size = 2
+```
+
+The certificate and key files must be in PEM format. The certificate file can contain the full chain (leaf certificate followed by intermediate certificates).
+
+<Tip>
+  Distribute the CA certificate (or the KBS leaf certificate for self-signed deployments) to guests through a trusted side channel so they can verify the KBS TLS identity before beginning the RCAR handshake.
+</Tip>
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="KBS overview" icon="key" href="/kbs/overview">
+    Architecture and deployment topologies for the Key Broker Service.
+  </Card>
+  <Card title="Deployment configuration" icon="sliders" href="/deployment/configuration">
+    Full reference for KBS configuration options.
+  </Card>
+</Columns>

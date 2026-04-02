@@ -1,0 +1,256 @@
+---
+title: "Storage backends"
+description: "Configure where the RVPS persists reference values: in-memory, local filesystem, local JSON, or PostgreSQL."
+---
+
+The RVPS uses the `key-value-storage` crate to store reference values. All backends implement the same `KeyValueStorage` interface, so switching between them requires only a configuration change.
+
+## Namespaces
+
+A **namespace** is a logical partition within a storage backend. When the RVPS stores a reference value, it writes to the `reference-value` namespace. Different namespaces within the same backend are physically separated:
+
+| Backend | Namespace separation |
+|---------|---------------------|
+| `LocalFs` | Each namespace maps to a subdirectory under `dir_path`. |
+| `LocalJson` | Each namespace maps to a separate JSON file in `file_dir_path`. |
+| `Postgres` | Each namespace maps to a separate database table. |
+| `Memory` | Each namespace has its own in-memory map. |
+
+When the RVPS runs as a standalone service, it uses a single namespace:
+
+| Namespace | Component | Purpose |
+|-----------|-----------|---------|
+| `reference-value` | RVPS | Stores reference values for supply chain verification. |
+
+## Available backends
+
+<Tabs>
+  <Tab title="Memory">
+    Stores reference values in a `HashMap` in process memory. Data is lost when the process exits.
+
+    **Use cases:** Development, testing, temporary storage.
+
+    **Configuration:**
+
+    ```json
+    {
+        "storage": {
+            "storage_type": "Memory"
+        }
+    }
+    ```
+
+    No additional properties are required under `storage`. This is the default when no storage configuration is specified.
+
+    <Warning>
+      Memory storage is not persisted. All reference values are lost when the RVPS process stops. Do not use Memory storage in production.
+    </Warning>
+  </Tab>
+  <Tab title="LocalFs">
+    Stores each reference value as a separate file in the local filesystem. Subdirectories separate namespaces.
+
+    **Use cases:** Single-machine deployments, file-level access, simple persistence.
+
+    **Configuration:**
+
+    ```json
+    {
+        "storage": {
+            "storage_type": "LocalFs",
+            "backends": {
+                "local_fs": {
+                    "dir_path": "/opt/confidential-containers/storage/local_fs"
+                }
+            }
+        }
+    }
+    ```
+
+    | Property | Type | Required | Default | Description |
+    |----------|------|----------|---------|-------------|
+    | `dir_path` | string | No | `/opt/confidential-containers/storage/local_fs` | Base directory. The `reference-value` namespace is stored under `<dir_path>/reference-value/`. |
+
+    The directory is created automatically if it does not exist.
+  </Tab>
+  <Tab title="LocalJson">
+    Stores all reference values in a single JSON file per namespace.
+
+    **Use cases:** Single-machine deployments, human-readable storage, easy inspection.
+
+    **Configuration:**
+
+    ```json
+    {
+        "storage": {
+            "storage_type": "LocalJson",
+            "backends": {
+                "local_json": {
+                    "file_dir_path": "/opt/confidential-containers/storage/local_json"
+                }
+            }
+        }
+    }
+    ```
+
+    | Property | Type | Required | Default | Description |
+    |----------|------|----------|---------|-------------|
+    | `file_dir_path` | string | No | `/opt/confidential-containers/storage/local_json` | Directory where JSON files are stored. The `reference-value` namespace is stored as `<file_dir_path>/reference-value.json`. |
+  </Tab>
+  <Tab title="PostgreSQL">
+    Stores reference values in a PostgreSQL database. Each namespace maps to a separate table.
+
+    **Use cases:** Production environments, distributed deployments, high availability.
+
+    **Configuration:**
+
+    ```json
+    {
+        "storage": {
+            "storage_type": "Postgres",
+            "backends": {
+                "postgres": {
+                    "host": "localhost",
+                    "port": 5432,
+                    "db": "rvps",
+                    "username": "postgres",
+                    "password": "password"
+                }
+            }
+        }
+    }
+    ```
+
+    | Property | Type | Required | Default | Description |
+    |----------|------|----------|---------|-------------|
+    | `host` | string | No | `localhost` | PostgreSQL server hostname. |
+    | `port` | integer | No | `5432` | PostgreSQL server port. |
+    | `db` | string | No | `postgres` | Database name. |
+    | `username` | string | No | `postgres` | Database user. |
+    | `password` | string | No | — | Database password. |
+
+    <Note>
+      If the `POSTGRES_URL` environment variable is set to a PostgreSQL connection URI, it takes precedence over the configuration properties above.
+    </Note>
+
+    The `reference-value` namespace is stored in a table named `reference-value`.
+  </Tab>
+</Tabs>
+
+## Key format
+
+Storage keys (artifact names) support the following characters:
+
+- Lowercase letters: `a–z`
+- Uppercase letters: `A–Z`
+- Digits: `0–9`
+- Special characters: `-`, `_`, `.`, `/`
+
+**Restrictions:**
+- Keys cannot start with `.` (period)
+- Keys cannot start with `/` (slash)
+
+## Full configuration examples
+
+The storage configuration is part of the top-level RVPS configuration file. The `extractors` section is optional.
+
+<Tabs>
+  <Tab title="Memory">
+    ```json
+    {
+        "storage": {
+            "storage_type": "Memory"
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="LocalFs">
+    ```json
+    {
+        "storage": {
+            "storage_type": "LocalFs",
+            "backends": {
+                "local_fs": {
+                    "dir_path": "/opt/confidential-containers/storage/local_fs"
+                }
+            }
+        },
+        "extractors": {
+            "swid_extractor": {}
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="LocalJson">
+    ```json
+    {
+        "storage": {
+            "storage_type": "LocalJson",
+            "backends": {
+                "local_json": {
+                    "file_dir_path": "/opt/confidential-containers/storage/local_json"
+                }
+            }
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="PostgreSQL">
+    ```json
+    {
+        "storage": {
+            "storage_type": "Postgres",
+            "backends": {
+                "postgres": {
+                    "host": "localhost",
+                    "port": 5432,
+                    "db": "rvps",
+                    "username": "postgres",
+                    "password": "password"
+                }
+            }
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Extractor configuration
+
+The `extractors` object in the configuration file is optional. When omitted, RVPS uses default settings for all extractors.
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `swid_extractor` | object | No | Configuration for the SWID/RIM extractor. Currently accepts an empty object `{}`. |
+
+**Example with extractor configuration:**
+
+```json
+{
+    "storage": {
+        "storage_type": "LocalFs",
+        "backends": {
+            "local_fs": {
+                "dir_path": "/opt/confidential-containers/storage/local_fs"
+            }
+        }
+    },
+    "extractors": {
+        "swid_extractor": {}
+    }
+}
+```
+
+<Note>
+  The sample extractor is always enabled and does not have configuration options. If `extractors` is omitted, the SWID extractor uses its defaults and logs a warning.
+</Note>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="RVPS overview" icon="server" href="/rvps/overview">
+    Learn how the RVPS fits into the attestation stack.
+  </Card>
+  <Card title="Provenance formats" icon="file-code" href="/rvps/provenance-formats">
+    See how to register provenance using each extractor type.
+  </Card>
+</CardGroup>

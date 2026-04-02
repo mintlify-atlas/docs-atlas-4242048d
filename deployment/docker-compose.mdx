@@ -1,0 +1,182 @@
+---
+title: "Docker Compose deployment"
+description: "Deploy the full Trustee cluster—KBS, Attestation Service, RVPS, and CoCo Keyprovider—using Docker Compose."
+---
+
+The Docker Compose configuration launches the complete Trustee stack as a set of networked containers. It is the fastest way to get a working cluster for local development and testing.
+
+## Services and ports
+
+| Service | Port | Description |
+|---|---|---|
+| `kbs` | `8080` | Key Broker Service |
+| `as` | `50004` | Attestation Service (gRPC) |
+| `rvps` | `50003` | Reference Value Provider Service (gRPC) |
+| `keyprovider` | `50000` | CoCo Keyprovider (gRPC) |
+
+The `setup` service runs once at startup to generate key material and exits when complete. All other services restart automatically.
+
+## Prerequisites
+
+- Docker with Compose v2 (`docker compose`)
+- `openssl`
+- `skopeo` (for image encryption)
+
+## Starting the cluster
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/confidential-containers/trustee.git
+    cd trustee
+    ```
+  </Step>
+
+  <Step title="Generate the auth key pair">
+    The `setup` service in Docker Compose can generate keys automatically on first run. Alternatively, generate them manually before starting:
+
+    ```bash
+    openssl genpkey -algorithm ed25519 > kbs/config/private.key
+    openssl pkey -in kbs/config/private.key -pubout -out kbs/config/public.pub
+    ```
+
+    <Note>
+      If the key files are missing or empty, the `setup` container generates them automatically before the other services start.
+    </Note>
+  </Step>
+
+  <Step title="Start the cluster">
+    ```bash
+    docker compose up -d
+    ```
+
+    Docker Compose starts the services in dependency order: `setup` completes first, then `rvps`, then `as`, then `kbs` and `keyprovider`.
+  </Step>
+
+  <Step title="Verify the services are running">
+    ```bash
+    docker compose ps
+    ```
+
+    All services except `setup` should show `running`. The `setup` container exits with status `Exited (0)` after generating keys.
+  </Step>
+</Steps>
+
+## Configuring for sample vs. real TEE evidence
+
+By default, the KBS cluster blocks sample evidence. This is the correct behavior for production deployments with real TEE hardware.
+
+<Tabs>
+  <Tab title="Sample evidence (testing)">
+    If you are testing without a real TEE, set a more permissive resource policy that allows sample attestation evidence.
+
+    Use the `kbs-client` tool or the admin API to upload an allow-all policy:
+
+    ```bash
+    cat > policy.rego <<EOF
+    package policy
+
+    default allow = true
+    EOF
+    ```
+
+    Then upload the policy via the KBS admin endpoint. See [KBS policies](/kbs/policies) for details.
+
+    <Warning>
+      Never use an allow-all policy in a production environment. Sample evidence bypasses real hardware attestation.
+    </Warning>
+  </Tab>
+  <Tab title="Real TEE evidence (production)">
+    The default policy in `kbs/config/kubernetes/base/policy.rego` rejects sample evidence. No policy changes are needed for production deployments.
+
+    Ensure that your TEE hardware is correctly configured and that the Attestation Service verifier driver matches your TEE type. See [Verifier drivers](/attestation-service/verifier-drivers) for supported TEE platforms.
+  </Tab>
+</Tabs>
+
+## Encrypting container images
+
+With the cluster running, use `skopeo` to encrypt a container image. The CoCo Keyprovider handles key generation and registration with KBS.
+
+<Steps>
+  <Step title="Create the ocicrypt configuration">
+    ```bash
+    tee > ocicrypt.conf <<EOF
+    {
+        "key-providers": {
+            "attestation-agent": {
+                "grpc": "127.0.0.1:50000"
+            }
+        }
+    }
+    EOF
+    ```
+
+    This configuration points `skopeo` at the CoCo Keyprovider running on port `50000`.
+  </Step>
+
+  <Step title="Encrypt the image">
+    ```bash
+    OCICRYPT_KEYPROVIDER_CONFIG=ocicrypt.conf skopeo copy \
+      --insecure-policy \
+      --encryption-key provider:attestation-agent \
+      docker://busybox \
+      oci:busybox_encrypted
+    ```
+
+    During encryption:
+
+    - The CoCo Keyprovider generates a random Key Encryption Key (KEK) and a key ID.
+    - The image is encrypted using the KEK.
+    - The Keyprovider registers the KEK with the key ID in KBS.
+  </Step>
+</Steps>
+
+<Info>
+  If you use the same KBS instance for key brokering at runtime, a confidential workload can decrypt the image using the registered KEK.
+</Info>
+
+## Configuration files
+
+The Docker Compose deployment uses the following configuration files from `kbs/config/`:
+
+| File | Service | Description |
+|---|---|---|
+| `docker-compose/kbs-config.toml` | KBS | KBS configuration: gRPC AS backend, storage, admin |
+| `as-config.json` | AS | Attestation Service configuration: RVPS address, token signing |
+| `rvps.json` | RVPS | RVPS configuration |
+| `private.key` / `public.pub` | KBS, keyprovider | Admin auth key pair |
+| `token.key` / `token-cert-chain.pem` | AS | Attestation token signing key and certificate chain |
+
+The KBS docker-compose config connects to the AS over gRPC:
+
+```toml
+[http_server]
+sockets = ["0.0.0.0:8080"]
+insecure_http = true
+
+[attestation_token]
+trusted_certs_paths = ["/opt/confidential-containers/kbs/user-keys/ca-cert.pem"]
+
+[attestation_service]
+type = "coco_as_grpc"
+as_addr = "http://as:50004"
+
+[admin]
+type = "Simple"
+
+[[admin.personas]]
+id = "admin"
+public_key_path = "/opt/confidential-containers/kbs/user-keys/public.pub"
+
+[[plugins]]
+name = "resource"
+type = "kvstorage"
+
+[storage_backend]
+storage_type = "LocalFs"
+
+[storage_backend.backends.local_fs]
+dir_path = "/opt/confidential-containers/kbs"
+```
+
+For a full description of all configuration options, see [Configuration reference](/deployment/configuration).

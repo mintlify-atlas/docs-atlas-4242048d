@@ -1,0 +1,115 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Trustee",
+  "projectDescription": "A suite of trusted components for remote attestation and secret delivery to confidential guests running in Trusted Execution Environments (TEEs).",
+  "theme": "aspen",
+  "primaryColor": "#51af92",
+  "lightColor": "#161152",
+  "darkColor": "#dfeee6",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker-compose",
+              "deployment/kubernetes",
+              "deployment/configuration"
+            ]
+          },
+          {
+            "group": "Key Broker Service",
+            "pages": [
+              "kbs/overview",
+              "kbs/attestation-modes",
+              "kbs/resource-management",
+              "kbs/policies",
+              "kbs/https-tls"
+            ]
+          },
+          {
+            "group": "Attestation Service",
+            "pages": [
+              "attestation-service/overview",
+              "attestation-service/verifier-drivers",
+              "attestation-service/attestation-token",
+              "attestation-service/policy-engine"
+            ]
+          },
+          {
+            "group": "Reference Value Provider",
+            "pages": [
+              "rvps/overview",
+              "rvps/provenance-formats",
+              "rvps/storage-backends"
+            ]
+          },
+          {
+            "group": "Tools & CLI",
+            "pages": [
+              "tools/kbs-client",
+              "tools/trustee-cli"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "KBS HTTP API",
+            "pages": [
+              "api/overview",
+              "api/attestation",
+              "api/resources",
+              "api/policies"
+            ]
+          },
+          {
+            "group": "gRPC Services",
+            "pages": [
+              "api/grpc-attestation-service",
+              "api/grpc-reference-value"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Remote attestation for TEEs (TDX, SGX, SNP, CCA, IBM SE, NVIDIA, TPM, and more)",
+    "Secret and key delivery to confidential guests via RCAR protocol",
+    "OPA/Rego-based attestation and resource access policies",
+    "Flexible deployment: all-in-one binary, Docker Compose, or Kubernetes",
+    "Reference value management for software supply chain verification",
+    "Multiple KMS backends: local filesystem, Aliyun KMS, HashiCorp Vault",
+    "Background Check and Passport attestation modes (RATS architecture)",
+    "EAR (EAT Attestation Results) token issuance in JWT format"
+  ],
+  "publicApiSurface": [
+    "POST /kbs/v0/auth — Initiate attestation (RCAR Request step)",
+    "POST /kbs/v0/attest — Submit TEE evidence (RCAR Attestation step)",
+    "GET /kbs/v0/resource/{repository}/{type}/{tag} — Retrieve secret resource (JWE encrypted)",
+    "POST /kbs/v0/resource/{repository}/{type}/{tag} — Register secret resource",
+    "POST /kbs/v0/attestation-policy — Set OPA attestation policy",
+    "POST /kbs/v0/resource-policy — Set resource access policy",
+    "GET /kbs/v0/resource-policy — Get current resource policy",
+    "POST /kbs/v0/reference-value — Register reference value",
+    "GET /kbs/v0/reference-value/{id} — Query reference value",
+    "GET /metrics — Prometheus metrics endpoint",
+    "gRPC AttestationService.AttestationEvaluate — Evaluate TEE evidence",
+    "gRPC AttestationService.SetAttestationPolicy — Upload attestation policy",
+    "gRPC ReferenceValueProviderService.RegisterReferenceValue — Register provenance",
+    "gRPC ReferenceValueProviderService.QueryReferenceValues — Query reference values"
+  ]
+}

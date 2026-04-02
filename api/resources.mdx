@@ -1,0 +1,225 @@
+---
+title: "Resource endpoints"
+description: "Retrieve and register secret resources in the KBS, and scrape Prometheus metrics."
+---
+
+Secret resources are referenced by a three-part path: `{repository}/{type}/{tag}`. This mirrors the concept of a container image repository — `repository` groups related resources, `type` distinguishes categories, and `tag` identifies individual instances.
+
+<Info>
+  Before a client can retrieve a resource, it must complete the RCAR attestation protocol via [POST /auth](/api/attestation#post-kbs-v0-auth) and [POST /attest](/api/attestation#post-kbs-v0-attest).
+</Info>
+
+---
+
+## GET /kbs/v0/resource/{repository}/{type}/{tag}
+
+Retrieve a secret resource. The KBS encrypts the response using the TEE public key from the client's attestation evidence, so only the attested TEE can decrypt it.
+
+### Path parameters
+
+<ParamField path="repository" type="string" required>
+  Parent path for the resource. Used to group related resources. Can be empty to use the default repository.
+</ParamField>
+
+<ParamField path="type" type="string" required>
+  Resource type name. Distinguishes different categories of resource within a repository.
+</ParamField>
+
+<ParamField path="tag" type="string" required>
+  Resource instance tag. Identifies a specific resource instance within a type.
+</ParamField>
+
+### Authentication
+
+Provide one of:
+
+- **Session cookie** — `Cookie: kbs-session-id=<id>` set during the `/auth` step.
+- **Bearer token** — `Authorization: Bearer <attestation-token>` from a prior `/attest` response.
+
+### Response
+
+#### 200 — Encrypted resource (JWE)
+
+The resource is returned as a [JSON Web Encryption (JWE)](https://www.rfc-editor.org/rfc/rfc7516) object in flattened serialization format. The symmetric encryption key is wrapped with the client's TEE public key.
+
+**Headers:**
+
+| Header | Example | Description |
+|---|---|---|
+| `Set-Cookie` | `kbs-session-id=1234` | Refreshed session identifier. |
+
+**Body:**
+
+<ResponseField name="protected" type="string" required>
+  Base64url-encoded JOSE header containing `alg` (key encryption algorithm) and `enc` (content encryption algorithm). The `alg` value matches the algorithm of the TEE public key submitted during attestation.
+</ResponseField>
+
+<ResponseField name="encrypted_key" type="string" required>
+  Base64url-encoded symmetric key encrypted with the TEE public key. Decrypt this with the TEE's corresponding private key to obtain the content encryption key.
+</ResponseField>
+
+<ResponseField name="iv" type="string" required>
+  Base64url-encoded initialization vector for the content encryption algorithm.
+</ResponseField>
+
+<ResponseField name="ciphertext" type="string" required>
+  Base64url-encoded encrypted resource data. Decrypt using the content encryption key and IV.
+</ResponseField>
+
+<ResponseField name="aad" type="string">
+  Additional authenticated data (present when AEAD is used). Computed as `ASCII(BASE64URL(UTF8(JWE Protected Header)))`.
+</ResponseField>
+
+<ResponseField name="tag" type="string">
+  Authentication tag for the encrypted data (present when the encryption algorithm produces one).
+</ResponseField>
+
+#### 401 — Unauthorized
+
+The session cookie or Bearer token is missing or invalid.
+
+#### 403 — Forbidden
+
+The client is authenticated but the attestation policy does not allow access to this resource.
+
+#### 404 — Not found
+
+The requested resource does not exist.
+
+### Examples
+
+<Tabs>
+  <Tab title="Session cookie">
+```bash
+curl -b cookies.txt \
+  http://<kbs>/kbs/v0/resource/my-repo/keys/database-key
+```
+  </Tab>
+  <Tab title="Bearer token">
+```bash
+curl \
+  -H "Authorization: Bearer $ATTESTATION_TOKEN" \
+  http://<kbs>/kbs/v0/resource/my-repo/keys/database-key
+```
+  </Tab>
+  <Tab title="Response">
+```json
+{
+  "protected": "eyJhbGciOiJSU0EtT0FFUCIsImVuYyI6IkEyNTZHQ00ifQ",
+  "encrypted_key": "OKOawDo13gRp2ojaHV7LFpZcgV7T6DVZKTyKOMTYUmKoTCVJRgckCL9kiMT03JGeipsEdY3mx_etLbbWSrFr05kLzcSr4qKAq7YN7e9jwQRb23nfa6c9d-StnImGyFDbSv04uVuxIp5Zms1gNxKgxUOiu5yy-e0KL6QtZJUMl4",
+  "iv": "48V1_ALb6US04U3b",
+  "ciphertext": "5eym8TW_c8SuK0ltJ3rpYIzOeDQz7TALvtu6UG9oMo4vpzs9tX_EFShS8iB7j6jiSdiwkIr3ajwQzoBtHR6vScope",
+  "tag": "XFBoMYUZodetZdvTiFvSkQ"
+}
+```
+  </Tab>
+</Tabs>
+
+<Note>
+  Resources are encrypted with the TEE public key from the client's attestation. Only the TEE holding the corresponding private key can decrypt the resource. The private key never leaves the TEE.
+</Note>
+
+---
+
+## POST /kbs/v0/resource/{repository}/{type}/{tag}
+
+Register a secret resource in the KBS. This is an admin operation.
+
+### Authentication
+
+Requires an admin JWT passed as `Authorization: Bearer <admin-token>`.
+
+### Path parameters
+
+<ParamField path="repository" type="string" required>
+  Parent path for the resource. Can be empty to store in the default repository.
+</ParamField>
+
+<ParamField path="type" type="string" required>
+  Resource type name.
+</ParamField>
+
+<ParamField path="tag" type="string" required>
+  Resource instance tag.
+</ParamField>
+
+### Request body
+
+The raw resource content. The `Content-Type` header can be any value. The KBS stores the body as-is and encrypts it when delivering it to attested clients.
+
+### Response
+
+#### 200 — Registered
+
+The resource was registered successfully. No response body.
+
+### Example
+
+<Tabs>
+  <Tab title="Register a key file">
+```bash
+curl \
+  -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @my-secret.key \
+  http://<kbs>/kbs/v0/resource/my-repo/keys/database-key
+```
+  </Tab>
+  <Tab title="Register inline content">
+```bash
+curl \
+  -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"key": "s3cr3t-v4lu3"}' \
+  http://<kbs>/kbs/v0/resource/my-repo/config/app-config
+```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Resource registration is an experimental feature. The admin token must be a JWT signed with the operator's private key. See [KBS policies](/kbs/policies) for configuration details.
+</Warning>
+
+---
+
+## GET /metrics
+
+Returns Prometheus-formatted metrics for monitoring the KBS.
+
+<Note>
+  This endpoint is served at the root path of the KBS host, **not** under the `/kbs/v0` prefix. The URL is `http://<kbs>/metrics`.
+</Note>
+
+### Authentication
+
+None required.
+
+### Response
+
+#### 200 — Metrics
+
+Prometheus text format metrics.
+
+**Content-Type:** `text/plain`
+
+**Body:** Prometheus exposition format metrics, for example:
+
+```text
+# HELP kbs_http_requests_total Total number of HTTP requests
+# TYPE kbs_http_requests_total counter
+kbs_http_requests_total{method="POST",path="/kbs/v0/auth",status="200"} 42
+kbs_http_requests_total{method="POST",path="/kbs/v0/attest",status="200"} 38
+kbs_http_requests_total{method="GET",path="/kbs/v0/resource",status="200"} 120
+```
+
+#### 405 — Method not allowed
+
+Returned for any non-GET request to `/metrics`.
+
+### Example
+
+```bash
+curl http://<kbs>/metrics
+```

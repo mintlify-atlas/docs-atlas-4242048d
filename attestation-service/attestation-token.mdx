@@ -1,0 +1,175 @@
+---
+title: "Attestation token"
+description: "The EAR attestation token format returned by the Attestation Service, including trust claim dimensions, submods, and hardware claims."
+---
+
+When TEE evidence verification does not fail, the Attestation Service returns an attestation token. This token is an [EAT Attestation Results (EAR)](https://datatracker.ietf.org/doc/draft-ietf-rats-ear/) token encoded as a [JSON Web Token (JWT)](https://datatracker.ietf.org/doc/html/rfc7519).
+
+## Token format
+
+The token is a signed JWT. The algorithm is RS384 (RSA with SHA-384). By default, the AS generates a new EC key pair on startup. A persistent signing key can be configured via the `signer` field in the [configuration file](/deployment/configuration).
+
+When the AS returns a token over REST or gRPC, the value is a base64-encoded JWT string. Decode the payload to access the claims.
+
+## Token structure
+
+The JWT payload follows the EAR specification. The top-level fields are:
+
+| Field | Description |
+|---|---|
+| `eat_profile` | Profile URI identifying this as a Trustee EAR token |
+| `iat` | Issued-at timestamp (Unix seconds) |
+| `exp` | Expiration timestamp (Unix seconds) |
+| `ear.verifier-id` | Identifies the AS instance (`developer`, `build`) |
+| `submods` | Map of appraisals, one per attested device class |
+
+### Submods
+
+The `submods` field contains one appraisal for each device that is part of the Trusted Computing Base (TCB). Each key is constructed from the device class and a zero-based index:
+
+- `cpu0` — the primary CPU attester (always present)
+- `gpu0`, `gpu1`, … — GPU attesters (present when a GPU has been attested)
+
+Each submod contains:
+
+| Field | Description |
+|---|---|
+| `ear.status` | Overall appraisal status (`affirming`, `warning`, `contraindicated`, `unknown`) |
+| `ear.trustworthiness-vector` | Map of trust claim dimensions to their numeric values |
+| `ear.appraisal-policy-id` | The policy ID used to evaluate this appraisal |
+| `ear.veraison.annotated-evidence` | Hardware claims extracted by the verifier driver |
+
+## Trust claim dimensions
+
+The `ear.trustworthiness-vector` maps each AR4SI trust claim dimension to a value between -127 and 127. The values encode the degree of trustworthiness asserted for each dimension. See the [AR4SI specification](https://datatracker.ietf.org/doc/draft-ietf-rats-ar4si/) for the full list of defined values.
+
+| Dimension | JSON key | Description |
+|---|---|---|
+| `instance_identity` | `instance-identity` | The identity of the attesting instance |
+| `configuration` | `configuration` | Platform configuration (debug mode, policy fields) |
+| `executables` | `executables` | Loaded executables, kernel, initrd, and firmware |
+| `file_system` | `file-system` | File system integrity |
+| `hardware` | `hardware` | Hardware and firmware genuineness |
+| `runtime_opaque` | `runtime-opaque` | Runtime memory confidentiality |
+| `storage_opaque` | `storage-opaque` | Storage confidentiality |
+| `sourced_data` | `sourced-data` | Integrity of externally sourced data |
+
+Common values used in the default policy:
+
+| Value | Meaning |
+|---|---|
+| `0` | No assertion |
+| `2` | Affirming — recognized, genuine, approved |
+| `3` | Affirming — approved executables loaded |
+| `33` | Warning — executables not recognized |
+| `36` | Warning — security-relevant configuration unavailable |
+| `97` | Warning — hardware not recognized but should be |
+
+## ReportData and InitData
+
+Two Trustee concepts appear in the `cpu0` appraisal under `ear.veraison.annotated-evidence`.
+
+### ReportData
+
+ReportData is data provided by the guest at attestation time (sometimes called user data). The KBS protocol uses this field to measure the nonce and the TEE public key. During attestation, Trustee verifies that the corresponding field in the hardware evidence matches the expected report data for the connection.
+
+### InitData
+
+InitData is a generalization over boot-time configuration fields such as HostData (on SNP) or MRConfig (on TDX). It is used to provision dynamic, measured, non-secret configuration to the guest.
+
+The InitData plaintext is a TOML or JSON file. Its hash is added to the hardware measurement. A client can optionally provide the InitData plaintext. If provided, Trustee checks the plaintext against the hardware evidence and exposes it to the policy engine and the attestation token.
+
+When the plaintext InitData is provided and contains Confidential Containers configuration, the following fields may appear in the token:
+
+| Field | Description |
+|---|---|
+| `cdh.toml` | JSON version of the CDH config from InitData |
+| `aa.toml` | JSON version of the AA config from InitData |
+| `agent_policy_claims` | `policy_data` claim from the Kata Agent policy (as JSON) |
+
+## Hardware claims
+
+The `ear.veraison.annotated-evidence` extension in the `cpu0` appraisal also includes platform-specific hardware claims extracted by the verifier. See the [verifier drivers](/attestation-service/verifier-drivers) page for the full list of claims per platform.
+
+## Extensions
+
+The policy can define an `extensions` claim that adds additional information to the appraisal. The default policy includes the `ear.trustee.identifiers` extension (key `-18`), which stores workload identifiers:
+
+- `validated` — identifiers bound to the hardware evidence via attestation and to the workload by the guest runtime (for example, container image names and UIDs from the Kata Agent policy in InitData)
+- `unvalidated` — any other identifiers that describe the workload
+
+## Example token
+
+The following is an example of the decoded JWT payload for an SGX attestation:
+
+```json
+{
+    "eat_profile": "tag:github.com,2024:confidential-containers/Trustee",
+    "iat": 1760426134,
+    "ear.verifier-id": {
+        "developer": "https://confidentialcontainers.org",
+        "build": "attestation-service 0.1.0"
+    },
+    "submods": {
+        "cpu0": {
+            "ear.status": "contraindicated",
+            "ear.trustworthiness-vector": {
+                "instance-identity": 0,
+                "configuration": 36,
+                "executables": 33,
+                "file-system": 0,
+                "hardware": 97,
+                "runtime-opaque": 0,
+                "storage-opaque": 0,
+                "sourced-data": 0
+            },
+            "ear.appraisal-policy-id": "default",
+            "ear.veraison.annotated-evidence": {
+                "init_data": "0000...0000",
+                "init_data_claims": null,
+                "report_data": "7465737400...0000",
+                "runtime_data_claims": null,
+                "sgx": {
+                    "advisory_ids": [
+                        "INTEL-SA-00586",
+                        "INTEL-SA-00614"
+                    ],
+                    "body": {
+                        "mr_enclave": "8f173e4613ff05c52aaf04162d234edae8c9977eae47eb2299ae16a553011c68",
+                        "mr_signer": "83d719e77deaca1470f6baf62a4d774303c899db69020f9c70ee1dfc08c7ce9e",
+                        "isv_prod_id": "0000",
+                        "isv_svn": "0000",
+                        "cpu_svn": "06060c0cffff00000000000000000000",
+                        "report_data": "74657374000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                    },
+                    "tcb_status": "OutOfDate",
+                    "collateral_expiration_status": "0",
+                    "tcb_date": "2021-11-10T00:00:00Z",
+                    "earliest_expiration_date": "2025-11-12T15:18:05Z"
+                }
+            }
+        }
+    },
+    "exp": 1760426434
+}
+```
+
+<Note>
+The `ear.status` value of `contraindicated` in this example reflects that the SGX platform's TCB status is `OutOfDate`. A fully up-to-date platform with matching reference values would produce `affirming` status with trust claim values of `2` or `3`.
+</Note>
+
+## Token configuration
+
+The token broker is configurable in the AS configuration file:
+
+| Field | Default | Description |
+|---|---|---|
+| `duration_min` | `5` | Token validity duration in minutes |
+| `issuer_name` | `CoCo-Attestation-Service` | Issuer name in the token |
+| `developer_name` | `https://confidentialcontainers.org` | Developer field in `ear.verifier-id` |
+| `build_name` | auto-generated | Build field in `ear.verifier-id` |
+| `profile_name` | `tag:github.com,2024:confidential-containers/Trustee` | EAR profile URI |
+| `signer.key_path` | — | PEM file path for the EC signing key |
+| `signer.cert_url` | — | URL of the EC public key certificate chain |
+| `signer.cert_path` | — | File path of the EC public key certificate chain |
+| `verbose_token` | `true` | Include detailed information in the token |

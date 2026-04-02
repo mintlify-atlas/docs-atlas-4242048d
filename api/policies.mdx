@@ -1,0 +1,276 @@
+---
+title: "Policy endpoints"
+description: "Manage attestation verification policies, resource distribution policies, and reference values via the KBS admin API."
+---
+
+These endpoints let operators configure how the KBS evaluates TEE evidence and controls access to resources. All endpoints require an admin JWT.
+
+<Warning>
+  All endpoints on this page require admin authentication. Pass the JWT as `Authorization: Bearer <admin-token>` in every request.
+</Warning>
+
+---
+
+## POST /kbs/v0/attestation-policy
+
+Set or update an attestation verification policy. The policy is evaluated against TEE evidence during the `/attest` step. Policies are written in [Rego](https://www.openpolicyagent.org/docs/latest/policy-language/) and evaluated by the OPA-compatible policy engine.
+
+### Request body
+
+<ParamField body="policy_id" type="string" required>
+  Identifier for the policy. The built-in default policy for CPU attestation has the ID `"default_cpu"`. Use this ID to replace the default policy. Custom IDs (e.g. `"my-policy_cpu"`) can also be used and referenced by name in attestation requests. Policy IDs for CPU evidence must end in `_cpu`; GPU evidence policies must end in `_gpu`.
+</ParamField>
+
+<ParamField body="policy" type="string" required>
+  Base64-encoded attestation verification policy content (Rego format, URL-safe base64 no padding).
+</ParamField>
+
+### Response
+
+#### 200 — Policy set
+
+The policy was set successfully. No response body.
+
+#### 400 — Invalid policy format
+
+The policy content could not be parsed or is invalid.
+
+**Body:** [ErrorInformation](#error-information)
+
+#### 401 — Unauthorized
+
+The admin token is missing or invalid.
+
+**Body:** [ErrorInformation](#error-information)
+
+### Example
+
+<Tabs>
+  <Tab title="curl">
+```bash
+# Encode your policy to base64
+POLICY=$(base64 -w 0 my-policy.rego)
+
+curl \
+  -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"policy_id\": \"default_cpu\",
+    \"policy\": \"$POLICY\"
+  }" \
+  http://<kbs>/kbs/v0/attestation-policy
+```
+  </Tab>
+  <Tab title="Sample policy (Rego)">
+```rego
+package policy
+
+import future.keywords.if
+import future.keywords.in
+
+default allow = false
+
+allow if {
+    input["tdx.body.mr_td"] == allowed_mr_td
+}
+
+allowed_mr_td := "a1b2c3d4..."
+```
+  </Tab>
+</Tabs>
+
+<Tip>
+  See [attestation policy engine](/attestation-service/policy-engine) for details on writing Rego policies and available input claims.
+</Tip>
+
+---
+
+## POST /kbs/v0/resource-policy
+
+Set the resource distribution policy. This policy controls which attested clients are allowed to access which resources.
+
+### Request body
+
+<ParamField body="policy" type="string" required>
+  Base64-encoded resource distribution policy content.
+</ParamField>
+
+### Response
+
+#### 200 — Policy set
+
+The policy was set successfully. No response body.
+
+#### 400 — Invalid policy format
+
+**Body:** [ErrorInformation](#error-information)
+
+#### 401 — Unauthorized
+
+**Body:** [ErrorInformation](#error-information)
+
+### Example
+
+```bash
+POLICY=$(base64 -w 0 resource-policy.rego)
+
+curl \
+  -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"policy\": \"$POLICY\"}" \
+  http://<kbs>/kbs/v0/resource-policy
+```
+
+---
+
+## GET /kbs/v0/resource-policy
+
+Retrieve the current resource distribution policy.
+
+### Authentication
+
+Requires an admin JWT passed as `Authorization: Bearer <admin-token>`.
+
+### Response
+
+#### 200 — Current policy
+
+**Content-Type:** `text/xml`
+
+The current resource policy content as a string.
+
+#### 401 — Unauthorized
+
+**Body:** [ErrorInformation](#error-information)
+
+### Example
+
+<Tabs>
+  <Tab title="curl">
+```bash
+curl \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://<kbs>/kbs/v0/resource-policy
+```
+  </Tab>
+</Tabs>
+
+---
+
+## POST /kbs/v0/reference-value
+
+Register a reference value in the KBS. Reference values are used by the attestation service to verify TEE measurements against known-good values.
+
+### Authentication
+
+Requires an admin JWT passed as `Authorization: Bearer <admin-token>`.
+
+### Request body
+
+A JSON object containing the reference value data. The exact schema depends on the reference value format used by your RVPS configuration.
+
+### Response
+
+#### 200 — Registered
+
+The reference value was registered successfully. Returns a JSON object.
+
+#### 400 — Invalid format
+
+**Body:** [ErrorInformation](#error-information)
+
+#### 401 — Unauthorized
+
+**Body:** [ErrorInformation](#error-information)
+
+### Example
+
+```bash
+curl \
+  -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "sample",
+    "expired": "2030-01-01T00:00:00Z",
+    "hash-value": [
+      {
+        "name": "sha256",
+        "value": "a1b2c3d4e5f6..."
+      }
+    ]
+  }' \
+  http://<kbs>/kbs/v0/reference-value
+```
+
+<Tip>
+  See [RVPS provenance formats](/rvps/provenance-formats) for the supported reference value payload schemas.
+</Tip>
+
+---
+
+## GET /kbs/v0/reference-value/{reference_value_id}
+
+Query a reference value by its ID.
+
+### Authentication
+
+Requires an admin JWT passed as `Authorization: Bearer <admin-token>`.
+
+### Path parameters
+
+<ParamField path="reference_value_id" type="string" required>
+  The ID of the reference value to retrieve. IDs can contain slashes for nested paths (e.g. `tdx/mr_td/my-image`).
+</ParamField>
+
+### Response
+
+#### 200 — Reference value
+
+Returns a JSON object containing the reference value data.
+
+#### 401 — Unauthorized
+
+**Body:** [ErrorInformation](#error-information)
+
+#### 404 — Not found
+
+The reference value with the given ID does not exist.
+
+**Body:** [ErrorInformation](#error-information)
+
+### Example
+
+<Tabs>
+  <Tab title="curl">
+```bash
+curl \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://<kbs>/kbs/v0/reference-value/tdx/mr_td/my-image"
+```
+  </Tab>
+  <Tab title="Nested path">
+```bash
+# IDs can contain slashes
+curl \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://<kbs>/kbs/v0/reference-value/sample/digest"
+```
+  </Tab>
+</Tabs>
+
+---
+
+## Error information
+
+All error responses use the [RFC 7807 Problem Details](https://www.rfc-editor.org/rfc/rfc7807) format:
+
+<ResponseField name="type" type="string" required>
+  A URI identifying the problem type: `https://github.com/confidential-containers/kbs/errors/<problem-type>`
+</ResponseField>
+
+<ResponseField name="detail" type="string" required>
+  A human-readable description of the specific error.
+</ResponseField>

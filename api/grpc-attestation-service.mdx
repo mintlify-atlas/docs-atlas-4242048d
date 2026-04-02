@@ -1,0 +1,248 @@
+---
+title: "Attestation Service gRPC API"
+description: "gRPC service for evaluating TEE evidence and managing attestation policies. Defined in protos/attestation.proto."
+---
+
+The Attestation Service (AS) exposes a gRPC API for evidence evaluation. When the KBS is deployed with a remote AS (`coco-as-grpc` mode), it communicates with the AS over this interface. The AS can also be called directly for standalone evidence verification.
+
+**Default address:** `127.0.0.1:50004`
+
+**Proto package:** `attestation`
+
+**Service name:** `attestation.AttestationService`
+
+<Info>
+  The full proto definition is at `protos/attestation.proto` in the Trustee repository. Pass `-import-path ../protos -proto ../protos/attestation.proto` to `grpcurl` when calling this service.
+</Info>
+
+---
+
+## Service definition
+
+```protobuf
+service AttestationService {
+    rpc AttestationEvaluate(AttestationRequest) returns (AttestationResponse) {};
+    rpc SetAttestationPolicy(SetPolicyRequest) returns (SetPolicyResponse) {};
+    rpc GetAttestationChallenge(ChallengeRequest) returns (ChallengeResponse) {};
+}
+```
+
+---
+
+## AttestationEvaluate
+
+Evaluate TEE evidence and return an attestation token JWT if the evidence is valid and passes policy.
+
+### Request: `AttestationRequest`
+
+<ParamField body="verification_requests" type="object[]" required>
+  One or more individual attestation requests to evaluate together.
+
+  <Expandable title="IndividualAttestationRequest fields">
+    <ParamField body="tee" type="string" required>
+      TEE type string, e.g. `"sgx"`, `"tdx"`, `"snp"`, `"sample"`. Determines which verifier plugin is used.
+    </ParamField>
+
+    <ParamField body="evidence" type="string" required>
+      Base64url-encoded (URL-safe, no padding) TEE evidence — typically a hardware-signed quote or report.
+    </ParamField>
+
+    <ParamField body="raw_runtime_data" type="string">
+      Base64url-encoded raw runtime data (URL-safe, no padding). The AS decodes this and hashes it to check against the binding in the evidence. Mutually exclusive with `structured_runtime_data`.
+    </ParamField>
+
+    <ParamField body="structured_runtime_data" type="string">
+      Runtime data as a JSON object string. The AS sorts keys at each level, serializes to compact JSON, then hashes the result and checks it against the evidence. The structured data is also included in the token claims. Mutually exclusive with `raw_runtime_data`.
+    </ParamField>
+
+    <ParamField body="init_data_digest" type="string">
+      Base64url-encoded init data digest (URL-safe, no padding). The AS checks this hash against the init data binding in the evidence. Mutually exclusive with `init_data_toml`.
+    </ParamField>
+
+    <ParamField body="init_data_toml" type="string">
+      Init data in TOML format. The AS hashes the entire TOML content and checks it against the evidence. The hash algorithm is declared in the TOML metadata. The `.data` field is included in the token claims. Mutually exclusive with `init_data_digest`.
+    </ParamField>
+
+    <ParamField body="runtime_data_hash_algorithm" type="string">
+      Hash algorithm for runtime data binding. Supported values: `"sha256"`, `"sha384"`, `"sha512"`. Defaults to `"sha384"` if not specified.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="policy_ids" type="string[]">
+  List of policy IDs to evaluate the evidence against. If empty, the `"default"` policy is used. EAR tokens are based on the first policy in the list.
+</ParamField>
+
+### Response: `AttestationResponse`
+
+<ResponseField name="attestation_token" type="string" required>
+  A signed JWT attestation token. The token contains TCB status, evaluation reports, and the runtime data claims (if `structured_runtime_data` was used).
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="grpcurl">
+```bash
+# Install grpcurl
+# go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest
+
+cd <trustee-repo>
+
+REQ=$(cat attestation-service/tests/coco-as/request.json)
+
+grpcurl \
+  -plaintext \
+  -import-path ./protos \
+  -proto ./protos/attestation.proto \
+  -d @ \
+  127.0.0.1:50004 \
+  attestation.AttestationService/AttestationEvaluate <<EOF
+$REQ
+EOF
+```
+  </Tab>
+  <Tab title="Request JSON">
+```json
+{
+  "verification_requests": [
+    {
+      "tee": "sample",
+      "evidence": "c2FtcGxlLWV2aWRlbmNl",
+      "structured_runtime_data": "{\"nonce\":\"YWJjZGVm\",\"tee-pubkey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"alg\":\"ECDH-ES\",\"x\":\"...\",\"y\":\"...\"}}",
+      "runtime_data_hash_algorithm": "sha384"
+    }
+  ],
+  "policy_ids": ["default"]
+}
+```
+  </Tab>
+  <Tab title="Response">
+```json
+{
+  "attestationToken": "eyJhbGciOiJSUzM4NCIsInR5cCI6IkpXVCJ9.eyJjdXN0b21pemVkX2NsYWltcyI6eyJ0ZXN0X2tleSI6InRlc3RfdmFsdWUifSwiZXZhbHVhdGlvbi1yZXBvcnRzIjpbeyJldmFsdWF0aW9uLXJlc3VsdCI6IntcImFsbG93XCI6dHJ1ZX0iLCJwb2xpY3ktaWQiOiJkZWZhdWx0In1dLCJleHAiOjE3MDE2NzI5NjUsImlzcyI6IkNvQ28tQXR0ZXN0YXRpb24tU2VydmljZSJ9.SIGNATURE"
+}
+```
+  </Tab>
+</Tabs>
+
+---
+
+## SetAttestationPolicy
+
+Set or update an attestation policy used to evaluate evidence.
+
+### Request: `SetPolicyRequest`
+
+<ParamField body="policy_id" type="string" required>
+  Identifier for the policy. Use `"default_cpu"` to replace the built-in default CPU attestation policy. Custom IDs can be used for named policies referenced in `AttestationRequest.policy_ids`. CPU policies must end in `_cpu`, GPU policies in `_gpu`.
+</ParamField>
+
+<ParamField body="policy" type="string" required>
+  Policy content. For Rego policies, this is the raw Rego text.
+</ParamField>
+
+### Response: `SetPolicyResponse`
+
+Empty response on success.
+
+### Example
+
+```bash
+grpcurl \
+  -plaintext \
+  -import-path ./protos \
+  -proto ./protos/attestation.proto \
+  -d '{
+    "policy_id": "default_cpu",
+    "policy": "package policy\n\ndefault allow = true"
+  }' \
+  127.0.0.1:50004 \
+  attestation.AttestationService/SetAttestationPolicy
+```
+
+<Warning>
+  Setting `allow = true` in a policy allows all evidence unconditionally. Only use this for local development with the `sample` TEE type. Production policies must check specific measurements and platform properties.
+</Warning>
+
+---
+
+## GetAttestationChallenge
+
+Request a challenge from the AS for a specific TEE type. Used by the KBS during the RCAR `/auth` step when the AS generates the nonce.
+
+### Request: `ChallengeRequest`
+
+<ParamField body="inner" type="object" required>
+  A map of string key-value pairs. Pass TEE-specific parameters here, such as:
+
+  | Key | Description |
+  |---|---|
+  | `tee` | TEE type string, e.g. `"tdx"` |
+  | `tee_params` | TEE-specific parameters as a JSON string |
+</ParamField>
+
+### Response: `ChallengeResponse`
+
+<ResponseField name="attestation_challenge" type="string" required>
+  The challenge string (nonce) to be included in the TEE evidence as the freshness value.
+</ResponseField>
+
+### Example
+
+```bash
+grpcurl \
+  -plaintext \
+  -import-path ./protos \
+  -proto ./protos/attestation.proto \
+  -d '{
+    "inner": {
+      "tee": "tdx"
+    }
+  }' \
+  127.0.0.1:50004 \
+  attestation.AttestationService/GetAttestationChallenge
+```
+
+---
+
+## Supported TEE types
+
+| Value | Platform |
+|---|---|
+| `az-snp-vtpm` | Microsoft Azure AMD SNP vTPM |
+| `az-tdx-vtpm` | Microsoft Azure TDX vTPM |
+| `sgx` | Intel SGX |
+| `snp` | AMD SEV-SNP |
+| `tdx` | Intel TDX |
+| `cca` | Arm CCA |
+| `csv` | Hygon CSV |
+| `se` | IBM Z Secure Execution |
+| `sample` | Test/sample (not for production) |
+
+---
+
+## Running the gRPC AS
+
+<Tabs>
+  <Tab title="Docker">
+```bash
+docker run -d \
+  -e QCNL_CONF_PATH=/run/dcap/qcnl.conf \
+  --tmpfs /run/dcap \
+  -p 50004:50004 \
+  ghcr.io/confidential-containers/staged-images/coco-as-grpc:latest
+```
+  </Tab>
+  <Tab title="Binary">
+```bash
+# Start gRPC AS on default port
+grpc-as --socket 127.0.0.1:50004
+
+# With debug logging
+RUST_LOG=debug grpc-as --socket 127.0.0.1:50004
+```
+  </Tab>
+</Tabs>
+
+For deployment configuration, see [Attestation Service overview](/attestation-service/overview).

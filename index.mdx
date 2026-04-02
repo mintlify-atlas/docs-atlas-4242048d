@@ -1,97 +1,72 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Trustee — Attestation and Secret Delivery"
+description: "Trusted components for remote attestation and secret delivery to confidential guests in Trusted Execution Environments (TEEs)."
 ---
 
-## Setting up
+Trustee is a suite of components that attests confidential guests running in hardware TEEs and securely delivers secrets to them. It implements the [RATS architecture](https://www.ietf.org/archive/id/draft-ietf-rats-architecture-22.html) and supports Intel TDX, Intel SGX, AMD SEV-SNP, ARM CCA, IBM Secure Execution, NVIDIA GPU attestation, TPM, and more.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Deploy Trustee locally and retrieve your first secret from a TEE in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand how KBS, AS, and RVPS work together to provide attestation.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Docker Compose" icon="docker" href="/deployment/docker-compose">
+    Spin up a full Trustee cluster with a single command using Docker Compose.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the KBS HTTP API and gRPC service definitions.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Core components
 
-Everything you need to create world-class documentation.
+<CardGroup cols={3}>
+  <Card title="Key Broker Service" icon="key" href="/kbs/overview">
+    Remote attestation and secret delivery server. Acts as the Relying Party in the RATS model.
+  </Card>
+  <Card title="Attestation Service" icon="shield-check" href="/attestation-service/overview">
+    Verifies TEE hardware evidence. Acts as the Verifier in the RATS model.
+  </Card>
+  <Card title="Reference Value Provider" icon="database" href="/rvps/overview">
+    Manages software supply chain reference values used during evidence evaluation.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## How it works
 
-## Need inspiration?
+<Steps>
+  <Step title="Guest requests attestation">
+    A confidential guest running in a TEE contacts the KBS to request a secret resource. The KBS issues a challenge nonce.
+  </Step>
+  <Step title="TEE generates evidence">
+    The guest generates hardware-signed attestation evidence binding the nonce and an ephemeral public key to the TEE measurement.
+  </Step>
+  <Step title="Evidence is verified">
+    The Attestation Service verifies the TEE evidence against reference values from the RVPS and evaluates it with OPA policies.
+  </Step>
+  <Step title="Secret is delivered">
+    After successful attestation, the KBS encrypts the requested secret with the guest's TEE public key and delivers it securely.
+  </Step>
+</Steps>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## Supported TEE platforms
+
+Trustee supports a wide range of hardware TEE platforms:
+
+| Platform | Description |
+|---|---|
+| Intel TDX | Intel Trust Domain Extensions |
+| Intel SGX | Intel Software Guard Extensions |
+| AMD SEV-SNP | AMD Secure Encrypted Virtualization — Secure Nested Paging |
+| ARM CCA | Confidential Compute Architecture |
+| IBM SE | IBM Z Secure Execution |
+| NVIDIA | NVIDIA GPU attestation |
+| Azure SNP vTPM | Azure AMD SEV-SNP with vTPM |
+| Azure TDX vTPM | Azure Intel TDX with vTPM |
+| TPM | Trusted Platform Module |
+
+<Note>
+Trustee was developed for the [Confidential Containers](https://github.com/confidential-containers) project but can be used with any confidential computing workload or hardware platform.
+</Note>

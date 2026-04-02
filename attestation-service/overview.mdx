@@ -1,0 +1,182 @@
+---
+title: "Attestation Service overview"
+description: "The Attestation Service (AS) verifies TEE hardware evidence and returns an attestation token containing the results of verification."
+---
+
+The Attestation Service (AS, also called CoCo-AS) verifies hardware evidence produced by Trusted Execution Environments. While designed for use with the [KBS](/kbs/overview) in Confidential Containers, it can be used in any situation where TEE evidence needs to be validated.
+
+## Architecture
+
+```
+                                  ┌───────────────────────┐
+┌───────────────────────┐ Evidence │  Attestation Service  │
+│                       ├─────────►│                       │
+│ Verification Demander │          │ ┌────────┐ ┌──────────┴───────┐
+│    (such as KBS)      │          │ │ Policy │ │ Reference Value  │◄── Reference Value
+│                       │◄─────────┤ │ Engine │ │ Provider Service │
+└───────────────────────┘ Token    │ └────────┘ └──────────┬───────┘
+                                   │                       │
+                                   │ ┌───────────────────┐ │
+                                   │ │  Verifier Drivers │ │
+                                   │ └───────────────────┘ │
+                                   └───────────────────────┘
+```
+
+The AS receives attestation evidence and returns an attestation token containing the results of a two-step verification process.
+
+## Two-step verification
+
+<Steps>
+  <Step title="Verify evidence format and provenance">
+    A platform-specific [verifier driver](/attestation-service/verifier-drivers) parses the hardware-TEE evidence, checks the hardware signature of the TEE quote or report, and extracts TCB claims as structured JSON.
+  </Step>
+  <Step title="Evaluate claims with policy and reference values">
+    The [policy engine](/attestation-service/policy-engine) evaluates the extracted claims using OPA/Rego policies. The [RVPS](/rvps/overview) supplies reference values that policies use to check measurements. The results are reflected in the returned [attestation token](/attestation-service/attestation-token).
+  </Step>
+</Steps>
+
+## Supported TEE platforms
+
+| TEE platform | Verifier driver name |
+|---|---|
+| Intel TDX | `tdx` |
+| Intel SGX | `sgx` |
+| AMD SEV-SNP | `snp` |
+| ARM Confidential Compute Architecture | `cca` |
+| Hygon CSV | `csv` |
+| Azure TDX with vTPM | `az-tdx-vtpm` |
+| Azure SEV-SNP with vTPM | `az-snp-vtpm` |
+| IBM Secure Execution | `se` |
+| NVIDIA GPU | `nvidia` |
+| Hygon DCU | `hygon-dcu` |
+| Trusted Platform Module | `tpm` |
+| Sample (testing only) | `sample` |
+
+## Deployment modes
+
+The AS can be consumed in three ways.
+
+### Library crate
+
+Import the AS directly as a Rust crate for embedding attestation into any project:
+
+```toml
+attestation-service = { git = "https://github.com/confidential-containers/trustee" }
+```
+
+<Note>
+The AS API is not yet fully stable. Import the crate from GitHub directly rather than from crates.io.
+</Note>
+
+### RESTful service
+
+Run the AS as an HTTP server. The community image is available at `ghcr.io/confidential-containers/staged-images/coco-as-restful`.
+
+<Tabs>
+  <Tab title="Docker (prebuilt image)">
+    ```bash
+    docker run -d \
+      -e QCNL_CONF_PATH=/run/dcap/qcnl.conf --tmpfs /run/dcap \
+      -p 8080:8080 \
+      ghcr.io/confidential-containers/staged-images/coco-as-restful:latest
+    ```
+  </Tab>
+  <Tab title="Build from source">
+    ```bash
+    git clone https://github.com/confidential-containers/trustee
+    cd trustee/attestation-service
+    make VERIFIER=all-verifier && make install
+    restful-as --socket 127.0.0.1:8080
+    ```
+  </Tab>
+  <Tab title="Podman">
+    ```bash
+    podman build \
+        -t restful-as \
+        -f attestation-service/docker/as-restful/Dockerfile \
+        .
+    podman run -d -p 8080:8080 --net host restful-as
+    ```
+  </Tab>
+</Tabs>
+
+Send an attestation request:
+
+```bash
+curl -k -X POST http://127.0.0.1:8080/attestation \
+     -H 'Content-Type: application/json' \
+     -d @tests/coco-as/request.json
+```
+
+The response is a base64-encoded JWT attestation token.
+
+### gRPC service
+
+Run the AS as a gRPC server. The community image is available at `ghcr.io/confidential-containers/staged-images/coco-as-grpc`.
+
+<Tabs>
+  <Tab title="Docker (prebuilt image)">
+    ```bash
+    docker run -d \
+      -e QCNL_CONF_PATH=/run/dcap/qcnl.conf --tmpfs /run/dcap \
+      -p 50004:50004 \
+      ghcr.io/confidential-containers/staged-images/coco-as-grpc:latest
+    ```
+  </Tab>
+  <Tab title="Build from source">
+    ```bash
+    git clone https://github.com/confidential-containers/trustee
+    cd trustee/attestation-service
+    make VERIFIER=all-verifier && make install
+    grpc-as --socket 127.0.0.1:50004
+    ```
+  </Tab>
+  <Tab title="Podman">
+    ```bash
+    podman build \
+        -t grpc-as \
+        -f attestation-service/docker/as-grpc/Dockerfile \
+        .
+    podman run -d -p 50004:50004 --net host grpc-as
+    ```
+  </Tab>
+</Tabs>
+
+Send an attestation request via `grpcurl`:
+
+```bash
+REQ=$(cat tests/coco-as/request.json)
+grpcurl \
+  -plaintext \
+  -import-path ../protos \
+  -proto ../protos/attestation.proto \
+  -d @ 127.0.0.1:50004 attestation.AttestationService/AttestationEvaluate <<EOF
+$REQ
+EOF
+```
+
+## Debug logging
+
+Pass `RUST_LOG=debug` to either binary to enable verbose runtime logging:
+
+```bash
+RUST_LOG=debug restful-as --socket 127.0.0.1:8080 -c config.json
+RUST_LOG=debug grpc-as --socket 127.0.0.1:50004
+```
+
+## Explore further
+
+<CardGroup cols={2}>
+  <Card title="Verifier drivers" href="/attestation-service/verifier-drivers" icon="microchip">
+    Details on each platform verifier, evidence struct formats, and architecture-specific support.
+  </Card>
+  <Card title="Attestation token" href="/attestation-service/attestation-token" icon="file-certificate">
+    Structure of the EAR attestation token, trust claim dimensions, and token claims.
+  </Card>
+  <Card title="Policy engine" href="/attestation-service/policy-engine" icon="shield-check">
+    OPA/Rego-based policy evaluation, writing custom policies, and uploading them via API.
+  </Card>
+  <Card title="Reference Value Provider" href="/rvps/overview" icon="database">
+    How the RVPS stores and provides reference values used during evidence evaluation.
+  </Card>
+</CardGroup>

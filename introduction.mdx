@@ -1,0 +1,95 @@
+---
+title: "Introduction"
+description: "Trustee is a suite of trusted components for remote attestation and secret delivery to confidential guests running in hardware Trusted Execution Environments (TEEs)."
+---
+
+Trustee provides the server-side infrastructure for attesting confidential workloads and securely delivering secrets to them. It implements the [IETF RATS architecture](https://www.ietf.org/archive/id/draft-ietf-rats-architecture-22.html) and is the counterpart to the [guest-components](https://github.com/confidential-containers/guest-components) stack running inside a TEE.
+
+Trustee was developed for the [Confidential Containers](https://github.com/confidential-containers) project but can be used with any confidential computing workload or hardware platform.
+
+## What is a TEE?
+
+A Trusted Execution Environment (TEE) is a hardware-isolated execution environment that provides confidentiality and integrity guarantees for the code and data running inside it. Hardware mechanisms prevent the host operating system, hypervisor, and other tenants from reading or tampering with a TEE's memory.
+
+Before a TEE can be trusted with secrets, a remote party must verify that:
+
+- The hardware is genuine and not counterfeit.
+- The firmware and software running in the TEE match expected measurements.
+- The TEE has not been compromised.
+
+This verification process is called **remote attestation**. Trustee performs this verification and, upon success, delivers secrets to the TEE.
+
+## Components
+
+Trustee consists of three main services that map directly to roles in the RATS architecture.
+
+### Key Broker Service (KBS)
+
+The KBS is an HTTP server that facilitates remote attestation and secret delivery. It acts as the [Relying Party](https://www.ietf.org/archive/id/draft-ietf-rats-architecture-22.html#name-relying-party) in the RATS model — the component that decides whether to release a secret based on attestation results.
+
+The KBS does not verify attestation evidence itself. It delegates evidence verification to the Attestation Service and uses the result to enforce resource access policies.
+
+### Attestation Service (AS)
+
+The AS verifies TEE hardware evidence. It acts as the [Verifier](https://www.ietf.org/archive/id/draft-ietf-rats-architecture-22.html#name-verifier) in the RATS model. The AS evaluates raw TEE evidence — quotes, measurements, and certificates — and produces an attestation result expressed as a signed JWT token. It uses an OPA-based policy engine to make allow/deny decisions.
+
+### Reference Value Provider Service (RVPS)
+
+The RVPS manages the reference values used to verify TEE evidence. It stores expected software measurements (digests, hashes) that the AS compares against the values reported by the TEE. The RVPS is related to the [Endorser and Reference Value Provider](https://www.ietf.org/archive/id/draft-ietf-rats-architecture-22.html#name-endorser-reference-value-pr) roles described in the RATS architecture.
+
+<Note>
+The KBS, AS, and RVPS can be deployed as a single all-in-one binary or as separate services communicating over gRPC, depending on your security and operational requirements.
+</Note>
+
+## Supported TEE platforms
+
+Trustee supports the following hardware TEE platforms:
+
+| Platform | Description |
+|---|---|
+| `tdx` | Intel Trust Domain Extensions |
+| `sgx` | Intel Software Guard Extensions |
+| `snp` | AMD Secure Encrypted Virtualization — Secure Nested Paging |
+| `cca` | ARM Confidential Compute Architecture |
+| `se` | IBM Z Secure Execution |
+| `csv` | China Secure Virtualization (Hygon) |
+| `hygon-dcu` | Hygon Deep Computing Unit |
+| `nvidia` | NVIDIA GPU attestation |
+| `tpm` | Trusted Platform Module |
+| `az-snp-vtpm` | Microsoft Azure AMD SNP with vTPM |
+| `az-tdx-vtpm` | Microsoft Azure Intel TDX with vTPM |
+
+<Tip>
+For local development and testing without real TEE hardware, Trustee provides a `sample` attester/verifier pair that can stand in for any of the above platforms.
+</Tip>
+
+## Deployment options
+
+Trustee can be deployed in multiple ways depending on your environment:
+
+- **All-in-one binary** — KBS, AS, and RVPS compiled into a single process. Simplest option for getting started.
+- **Docker Compose** — A pre-configured cluster that starts all services with a single command.
+- **Kubernetes** — Production deployments via the [KBS Operator](https://github.com/confidential-containers/kbs-operator) or the provided Kubernetes manifests.
+
+## Explore Trustee
+
+<Columns cols={2}>
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Deploy KBS locally on Ubuntu 22.04 and retrieve your first resource in minutes.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand the RATS model, RCAR protocol, and how the components interact.
+  </Card>
+  <Card title="Key Broker Service" icon="key" href="/kbs/overview">
+    Remote attestation and secret delivery server.
+  </Card>
+  <Card title="Attestation Service" icon="shield-check" href="/attestation-service/overview">
+    TEE evidence verification and policy evaluation.
+  </Card>
+  <Card title="Reference Value Provider" icon="database" href="/rvps/overview">
+    Software supply chain reference value management.
+  </Card>
+  <Card title="API reference" icon="code" href="/api/overview">
+    KBS HTTP API and gRPC service definitions.
+  </Card>
+</Columns>

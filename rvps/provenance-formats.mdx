@@ -1,0 +1,208 @@
+---
+title: "Provenance formats"
+description: "Extractor types supported by the RVPS and how to register provenance messages."
+---
+
+The RVPS uses **extractors** to process different types of provenance. Each extractor understands a specific payload format, verifies the content where applicable, and produces reference values to store. The `type` field in the message envelope selects which extractor to use.
+
+## Available extractors
+
+<Tabs>
+  <Tab title="Sample">
+    **Type string:** `sample`
+
+    The sample extractor directly reads reference values from the payload without verifying any signatures. It exists for testing and demo purposes and should not be used in production environments where supply chain integrity matters.
+
+    <Warning>
+      The sample extractor does not verify signatures. Use a signed provenance format for production deployments.
+    </Warning>
+
+    **Payload format:**
+
+    The payload is a base64-encoded JSON object mapping artifact names to lists of expected hash values:
+
+    ```json
+    {
+        "<name-1>": [
+            "<reference-value-1>",
+            "<reference-value-2>"
+        ],
+        "<name-2>": [
+            "<reference-value-1>",
+            "<reference-value-2>"
+        ]
+    }
+    ```
+
+    - Default expiration: 12 months from registration time
+    - Default hash algorithm: `sha384`
+  </Tab>
+  <Tab title="SWID/RIM">
+    **Type string:** `swid`
+
+    The SWID/RIM extractor processes manifests that carry SWID (Software Identification) tags with RIM (Reference Integrity Manifest) bindings. It extracts reference values from the manifest content.
+
+    This extractor has been tested with NVIDIA RIM manifests for the vbios of H100 GPUs. It can be extended to handle other RIM/SWID use cases in the future.
+
+    <Note>
+      The SWID extractor does not verify the manifest signature. Verify the authenticity of the manifest before submitting it to the RVPS.
+    </Note>
+
+    - Default expiration: 12 months from registration time
+    - Default hash algorithm: `sha384`
+    - The `swid_extractor` configuration object currently has no options (use an empty object `{}`).
+
+    Enable the extractor in the RVPS configuration:
+
+    ```json
+    {
+        "extractors": {
+            "swid_extractor": {}
+        }
+    }
+    ```
+  </Tab>
+  <Tab title="In-toto">
+    **Type string:** `in-toto`
+
+    The in-toto extractor verifies all `.link` files using the [in-toto-golang verifylib](https://github.com/in-toto/in-toto-golang/blob/master/in_toto/verifylib.go) and extracts reference values from the verified summary link.
+
+    <Note>
+      The in-toto extractor requires the `in-toto` Cargo feature flag to be enabled at compile time. It is not included in default builds.
+    </Note>
+
+    **Payload format:**
+
+    The payload is a base64-encoded JSON object containing all in-toto metadata files:
+
+    ```json
+    {
+        "version": "0.9",
+        "line_normalization": true,
+        "files": {
+            "<relative-file-path>": "<base64-encoded-content>"
+        }
+    }
+    ```
+
+    | Field | Description |
+    |-------|-------------|
+    | `version` | Version of the in-toto provenance format. Default: `0.9`. |
+    | `line_normalization` | When `true`, converts CRLF line endings to LF before computing digests. Useful for cross-platform compatibility. |
+    | `files` | Map of relative file paths to base64-encoded content. Includes `.link`, `.pub`, and `.layout` files. |
+
+    **Verification process:**
+
+    The extractor runs the full in-toto verification:
+    1. Verifies the layout signature and all link file signatures.
+    2. Checks that materials and products match what the layout defines.
+    3. Executes any inspections defined in the layout.
+    4. Returns a summary link containing the products of the supply chain with their digests.
+
+    The summary link products are formatted into `ReferenceValue` records and stored in the RVPS.
+  </Tab>
+</Tabs>
+
+## Registering provenance
+
+Use the `rvps-tool` command-line client to register provenance with a running RVPS instance.
+
+### Example: sample provenance
+
+<Steps>
+  <Step title="Start RVPS">
+    ```bash
+    RVPS_ADDR=127.0.0.1:50003
+    rvps --address $RVPS_ADDR
+    ```
+  </Step>
+  <Step title="Create the sample payload">
+    Create a JSON file with artifact names and their expected reference values:
+
+    ```bash
+    cat << EOF > sample
+    {
+        "test-binary-1": [
+            "reference-value-1",
+            "reference-value-2"
+        ],
+        "test-binary-2": [
+            "reference-value-3",
+            "reference-value-4"
+        ]
+    }
+    EOF
+    ```
+  </Step>
+  <Step title="Build the message envelope">
+    Encode the payload as base64 and wrap it in the message envelope:
+
+    ```bash
+    provenance=$(cat sample | base64 --wrap=0)
+    cat << EOF > message
+    {
+        "version" : "0.1.0",
+        "type": "sample",
+        "payload": "$provenance"
+    }
+    EOF
+    ```
+  </Step>
+  <Step title="Register with RVPS">
+    ```bash
+    rvps-tool register --path ./message --addr http://$RVPS_ADDR
+    ```
+
+    On success:
+
+    ```
+    [2023-03-09T04:44:11Z INFO  rvps_client] Register provenance succeeded.
+    ```
+  </Step>
+</Steps>
+
+## Querying reference values
+
+After registering provenance, query the stored reference values:
+
+```bash
+rvps-tool query --addr http://$RVPS_ADDR
+```
+
+Example output:
+
+```
+[2025-01-24T06:04:41Z INFO  rvps_tool] Get reference values succeeded:
+     {"test-binary-1":["reference-value-1","reference-value-2"],
+      "test-binary-2":["reference-value-3","reference-value-4"]}
+```
+
+To query a specific reference value by name, provide the artifact name as an argument. The RVPS also supports the recommended `rvps:///` URI format for organizing reference values by namespace and version tag:
+
+```
+rvps:///github.com/confidential-containers/tdx/mr_td:v0.18.0
+```
+
+<Tip>
+  Use versioned tags (for example, `v0.18.0`) rather than mutable tags like `latest` in attestation policies to ensure reproducible results.
+</Tip>
+
+## gRPC API
+
+The RVPS exposes the following gRPC methods, defined in `protos/reference.proto`:
+
+```protobuf
+service ReferenceValueProviderService {
+    rpc QueryReferenceValue(ReferenceValueQueryRequest)
+        returns (ReferenceValueQueryResponse) {};
+    rpc RegisterReferenceValue(ReferenceValueRegisterRequest)
+        returns (ReferenceValueRegisterResponse) {};
+}
+```
+
+| Method | Request field | Response field |
+|--------|--------------|----------------|
+| `RegisterReferenceValue` | `message` (string) — the full message envelope as JSON | Empty on success |
+| `QueryReferenceValue` | `reference_value_id` (string) — artifact name or URI | `reference_value_results` (optional string) |
+
+See the [gRPC API reference](/api/grpc-reference-value) for full details.

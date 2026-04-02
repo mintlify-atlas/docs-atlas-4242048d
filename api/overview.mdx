@@ -1,0 +1,122 @@
+---
+title: "API overview"
+description: "HTTP and gRPC APIs for the Trustee Key Broker Service, Attestation Service, and Reference Value Provider Service."
+---
+
+The Trustee project exposes three API surfaces:
+
+- **KBS HTTP API** — OpenAPI 3.1 compliant REST API for attestation and secret delivery
+- **Attestation Service gRPC API** — gRPC service for evidence evaluation and policy management
+- **Reference Value Provider gRPC API** — gRPC service for managing reference values used in attestation
+
+## KBS HTTP API
+
+### Base URL
+
+```
+http://<kbs>/kbs/v0
+```
+
+The metrics endpoint is served without the `/kbs/v0` prefix:
+
+```
+http://<kbs>/metrics
+```
+
+<Note>
+  Deployments should use HTTPS in production. The KBS uses TLS to allow clients to authenticate the server identity before submitting attestation evidence. See [HTTPS/TLS configuration](/kbs/https-tls) for setup instructions.
+</Note>
+
+### Authentication
+
+The KBS API has two authentication modes depending on the endpoint category:
+
+| Category | Auth mechanism |
+|---|---|
+| Attestation protocol endpoints | Session cookie (`kbs-session-id`) set during `/auth`, or Bearer token from a prior attestation |
+| Admin endpoints | Admin JWT signed with the operator's private key, passed as `Authorization: Bearer <token>` |
+
+### Endpoint categories
+
+#### Attestation protocol endpoints
+
+These endpoints implement the **Request-Challenge-Attestation-Response (RCAR)** protocol. A client (Key Broker Client) running inside a confidential guest uses these to authenticate itself and retrieve secrets.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/kbs/v0/auth` | Initiate attestation — send a `Request` payload, receive a `Challenge` and session cookie |
+| `POST` | `/kbs/v0/attest` | Submit TEE evidence — receive an `AttestationToken` JWT on success |
+| `GET` | `/kbs/v0/resource/{repository}/{type}/{tag}` | Retrieve an encrypted secret resource (requires session cookie or Bearer token) |
+
+#### Admin endpoints
+
+These endpoints are for operators to configure the KBS. All require a valid admin JWT.
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/kbs/v0/resource/{repository}/{type}/{tag}` | Register a secret resource |
+| `POST` | `/kbs/v0/attestation-policy` | Set an attestation verification policy |
+| `POST` | `/kbs/v0/resource-policy` | Set the resource distribution policy |
+| `GET` | `/kbs/v0/resource-policy` | Get the current resource distribution policy |
+| `POST` | `/kbs/v0/reference-value` | Register a reference value |
+| `GET` | `/kbs/v0/reference-value/{reference_value_id}` | Query a reference value by ID |
+| `GET` | `/metrics` | Prometheus metrics (no auth required) |
+
+### Error format
+
+All error responses use the [RFC 7807 Problem Details](https://www.rfc-editor.org/rfc/rfc7807) format:
+
+```json
+{
+  "type": "https://github.com/confidential-containers/kbs/errors/<problem-type>",
+  "detail": "Human-readable description of the error"
+}
+```
+
+### RCAR protocol flow
+
+The attestation protocol follows four steps:
+
+```
+Attester                                          KBS
+   |                                               |
+   |──── POST /kbs/v0/auth (Request) ────────────▶|
+   |◀─── 200 Challenge + Set-Cookie ──────────────|
+   |                                               |
+   |──── POST /kbs/v0/attest (Attestation) ───────|
+   |     Cookie: kbs-session-id=<id>               |
+   |◀─── 200 AttestationToken + Set-Cookie ───────|
+   |                                               |
+   |──── GET /kbs/v0/resource/<repo>/<type>/<tag> ▶|
+   |     Cookie: kbs-session-id=<id>               |
+   |◀─── 200 JWE encrypted resource ──────────────|
+```
+
+After a successful attestation, the session cookie can be reused for subsequent resource requests within its validity period. Alternatively, the `AttestationToken` JWT returned by `/attest` can be used as a Bearer token for resource requests without a session cookie.
+
+## gRPC services
+
+| Service | Default address | Proto file |
+|---|---|---|
+| `AttestationService` | `127.0.0.1:50004` | `protos/attestation.proto` |
+| `ReferenceValueProviderService` | `localhost:50003` | `protos/reference.proto` |
+
+## Detailed reference
+
+<Columns cols={2}>
+  <Card title="Attestation endpoints" icon="shield-check" href="/api/attestation">
+    POST /auth and POST /attest — the RCAR attestation protocol.
+  </Card>
+  <Card title="Resource endpoints" icon="lock" href="/api/resources">
+    GET and POST /resource — retrieve and register secret resources.
+  </Card>
+  <Card title="Policy endpoints" icon="file-code" href="/api/policies">
+    Manage attestation and resource distribution policies and reference values.
+  </Card>
+  <Card title="Attestation Service gRPC" icon="server" href="/api/grpc-attestation-service">
+    gRPC API for evidence evaluation and policy management.
+  </Card>
+  <Card title="Reference Value Provider gRPC" icon="database" href="/api/grpc-reference-value">
+    gRPC API for querying and registering reference values.
+  </Card>
+</Columns>

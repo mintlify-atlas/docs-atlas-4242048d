@@ -1,0 +1,207 @@
+---
+title: "Reference Value Provider Service"
+description: "Receive software supply chain provenances, verify them, and store reference values for use in attestation."
+---
+
+The Reference Value Provider Service (RVPS) is the component responsible for managing reference values in the Trustee attestation stack. It receives software supply chain provenances, verifies them using type-specific extractors, and stores the resulting reference values. When the Attestation Service (AS) evaluates TEE evidence, it queries the RVPS to retrieve the expected measurements to compare against the actual evidence.
+
+## Role in attestation
+
+In the [RATS architecture](/architecture), the AS acts as the Verifier and the RVPS supplies endorsements. The AS policy engine calls `query_reference_value` to fetch expected measurements from the RVPS during attestation evaluation. The RVPS provides what the AS needs to determine whether the evidence from a TEE is trustworthy.
+
+```
+Provenance producer  →  RVPS  →  Storage
+                                     ↑
+                         AS  ─────────
+                          ↑
+                         TEE evidence
+```
+
+## Message flow
+
+<Steps>
+  <Step title="Provenance submission">
+    A client sends a signed or unsigned provenance message to the RVPS. The message contains a version, a type field that selects the extractor, and a base64-encoded payload.
+  </Step>
+  <Step title="Extraction">
+    The RVPS routes the message to the matching extractor based on the `type` field. The extractor verifies and parses the payload, producing one or more `ReferenceValue` records.
+  </Step>
+  <Step title="Storage">
+    Each extracted reference value is stored in the configured storage backend under the `reference-value` namespace, keyed by the artifact name.
+  </Step>
+  <Step title="Query by Attestation Service">
+    When evaluating attestation evidence, the AS policy calls `query_reference_value` with an artifact name or URI. The RVPS retrieves the stored value and returns it to the AS for comparison with the TEE evidence.
+  </Step>
+</Steps>
+
+## Message format
+
+Every provenance submission uses this envelope format:
+
+```json
+{
+    "version": "0.1.0",
+    "type": "<extractor-type>",
+    "payload": "<base64-encoded-provenance>"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `version` | Message format version. Currently `0.1.0`. |
+| `type` | Selects the extractor: `sample`, `swid`, or `in-toto`. |
+| `payload` | Base64-encoded provenance content. The structure depends on the extractor type. |
+
+The RVPS rejects messages where `version` does not match `0.1.0`.
+
+## Trust digests vs. reference values
+
+The RVPS uses two related but distinct terms:
+
+- **Reference values** are the full records stored in RVPS. They include the artifact name, an expiration timestamp, a version, and the value itself.
+- **Trust digests** are the actual hash values delivered to the AS for comparison against TEE evidence. The term "trust digests" is used instead of "reference values" at the AS boundary to avoid ambiguity.
+
+The `TrustedDigest` type carries a `name` and a list of base64-encoded `hash_values`. This is what the AS receives when it queries the RVPS.
+
+## Running RVPS
+
+### Build from source
+
+<Steps>
+  <Step title="Install dependencies">
+    Install the protocol buffer compiler:
+
+    ```bash
+    # Ubuntu/Debian
+    apt-get install protobuf-compiler
+    ```
+  </Step>
+  <Step title="Build and install">
+    ```bash
+    git clone https://github.com/confidential-containers/trustee
+    cd trustee/rvps
+    make build && sudo make install
+    ```
+  </Step>
+  <Step title="Run">
+    ```bash
+    rvps
+    ```
+
+    By default, RVPS listens on `localhost:50003`.
+
+    To bind to a different address:
+
+    ```bash
+    rvps --address 0.0.0.0:50003
+    ```
+  </Step>
+</Steps>
+
+### Run as a container
+
+<Tabs>
+  <Tab title="Docker">
+    Build the image:
+
+    ```bash
+    cd trustee
+    docker build -t rvps -f rvps/docker/Dockerfile .
+    ```
+
+    Run the container:
+
+    ```bash
+    docker run -d -p 50003:50003 rvps --address 0.0.0.0:50003
+    ```
+  </Tab>
+  <Tab title="Podman">
+    Build the image:
+
+    ```bash
+    cd trustee
+    podman build -t rvps -f rvps/docker/Dockerfile .
+    ```
+
+    Run the container:
+
+    ```bash
+    podman run -d -p 50003:50003 --net host rvps
+    ```
+  </Tab>
+</Tabs>
+
+### Configuration file
+
+Launch RVPS with a configuration file using the `-c` flag:
+
+```bash
+rvps -c /path/to/config.json
+```
+
+A minimal configuration file:
+
+```json
+{
+    "storage": {
+        "storage_type": "LocalFs",
+        "backends": {
+            "local_fs": {
+                "dir_path": "/opt/confidential-containers/storage/local_fs"
+            }
+        }
+    },
+    "extractors": {
+        "swid_extractor": {}
+    }
+}
+```
+
+See [Storage backends](/rvps/storage-backends) for all storage options.
+
+## Integration modes
+
+The RVPS can be integrated with the Attestation Service in two ways:
+
+<Tabs>
+  <Tab title="gRPC (recommended)">
+    The AS connects to a separately deployed RVPS over gRPC. Build the AS with the `rvps-grpc` feature:
+
+    ```bash
+    cd attestation-service && cargo run --bin as-grpc -- --config-file config.json
+    ```
+
+    The gRPC service is defined in [`protos/reference.proto`](https://github.com/confidential-containers/trustee/blob/main/protos/reference.proto) and exposes two RPCs:
+
+    | RPC | Description |
+    |----|-------------|
+    | `RegisterReferenceValue` | Submit a provenance message for extraction and storage. |
+    | `QueryReferenceValue` | Retrieve a stored reference value by artifact name or URI. |
+
+    This mode allows independent scaling and deployment of the RVPS.
+  </Tab>
+  <Tab title="Native (built-in)">
+    The RVPS runs as a library crate compiled directly into the AS binary. No separate process or network connection is required.
+
+    <Warning>
+      Native mode is not recommended for production deployments. It couples the RVPS lifecycle to the AS and does not allow independent updates or scaling.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Provenance formats" icon="file-code" href="/rvps/provenance-formats">
+    Learn about the extractor types and how to register provenance.
+  </Card>
+  <Card title="Storage backends" icon="database" href="/rvps/storage-backends">
+    Configure memory, filesystem, JSON, or PostgreSQL storage.
+  </Card>
+  <Card title="Attestation Service" icon="shield-check" href="/attestation-service/overview">
+    See how the AS queries the RVPS during evidence evaluation.
+  </Card>
+  <Card title="gRPC API reference" icon="code" href="/api/grpc-reference-value">
+    Explore the full gRPC service definition for the RVPS.
+  </Card>
+</CardGroup>

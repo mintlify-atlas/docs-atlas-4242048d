@@ -1,0 +1,257 @@
+---
+title: "Verifier drivers"
+description: "Platform-specific drivers that parse TEE hardware evidence, verify signatures, and extract TCB claims."
+---
+
+A verifier driver performs two tasks for a given TEE platform:
+
+1. Verify the hardware signature of the TEE quote or report in the evidence.
+2. Resolve the evidence and organize the TCB status into structured JSON claims.
+
+The verifier is selected automatically based on the `tee` field in the attestation request.
+
+## Architecture-specific support
+
+The set of available verifier drivers depends on the build target architecture:
+
+| Architecture | Available verifiers |
+|---|---|
+| `x86_64` | All verifiers via the `all-verifier` feature flag |
+| `aarch64` | `cca` |
+| `s390x` | `snp`, `nvidia`, `se` |
+
+## Building with specific verifiers
+
+Each verifier is controlled by a Cargo feature flag. Use the `VERIFIER` make variable or pass feature flags directly:
+
+```bash
+# Build with all verifiers (x86_64)
+make VERIFIER=all-verifier
+
+# Build with a specific verifier
+cargo build --no-default-features --features tdx-verifier
+
+# Run tests for a specific verifier
+cargo test -p verifier --no-default-features --features snp-verifier
+```
+
+Available feature flags: `tdx-verifier`, `sgx-verifier`, `snp-verifier`, `cca-verifier`, `csv-verifier`, `tpm-verifier`, `all-verifier`, `az-snp-vtpm-verifier`, `az-tdx-vtpm-verifier`, `se-verifier`, `nvidia-verifier`, `hygon-dcu-verifier`.
+
+## Verifier reference
+
+### `sample`
+
+A dummy verifier used only for testing and demonstration of AS functionality. It accepts fabricated evidence with no real hardware binding.
+
+<Warning>
+The `sample` verifier provides no security guarantees. Release builds of the AS exclude it. Default policies must reject sample evidence. Never use the sample verifier in production.
+</Warning>
+
+- **Architecture**: all
+- **Feature flag**: always included (non-optional)
+- **Evidence struct**: `SampleTeeEvidence`
+- **Evidence fields**: `svn` (string), `report_data` (string)
+
+---
+
+### `tdx`
+
+Verifier for Intel Trust Domain Extension (Intel TDX). Parses a TDX quote (v4 or v5 format) and optionally a CC Event Log (CCEL/ACPI table).
+
+- **Architecture**: `x86_64`
+- **Feature flag**: `tdx-verifier`
+- **Evidence struct**: `TdxEvidence`
+- **Evidence fields**:
+  - `quote` — base64-encoded TD quote
+  - `cc_eventlog` — base64-encoded CC event log ACPI table (optional)
+
+The verifier uses Intel DCAP for quote verification. It extracts quote header fields, body measurements (MRTD, RTMRs, SEAM, etc.), TCB status, collateral expiration status, and advisory IDs. When a CCEL is provided, UEFI event log entries are parsed and included in the claims.
+
+---
+
+### `sgx`
+
+Verifier for Intel Software Guard Extensions (Intel SGX). Parses an SGX ECDSA quote.
+
+- **Architecture**: `x86_64`
+- **Feature flag**: `sgx-verifier`
+- **Evidence struct**: `SgxEvidence`
+- **Evidence fields**:
+  - `quote` — base64-encoded SGX quote
+
+The verifier uses Intel DCAP. It extracts enclave measurements (`mr_enclave`, `mr_signer`), ISV product and security version numbers, attributes, and TCB collateral fields.
+
+---
+
+### `snp`
+
+Verifier for AMD Secure Encrypted Virtualization-Secure Nested Paging (AMD SEV-SNP).
+
+- **Architecture**: `x86_64`, `s390x`
+- **Feature flag**: `snp-verifier`
+- **Evidence struct**: `SnpEvidence`
+- **Evidence fields**:
+  - `attestation_report` — AMD SNP attestation report
+  - `cert_chain` — optional certificate chain entries
+
+The verifier fetches VCEK certificates from the AMD Key Distribution Service (KDS) or an offline store. It extracts the launch measurement, TCB version components (bootloader, microcode, SNP, TEE), and guest policy fields.
+
+---
+
+### `az-snp-vtpm`
+
+Verifier for Azure confidential VMs using AMD SEV-SNP with a virtual TPM.
+
+- **Architecture**: `x86_64`
+- **Feature flag**: `az-snp-vtpm-verifier`
+- **Evidence struct**: `Evidence` (from `az_snp_vtpm::compat`)
+- **Evidence fields**: HCL report containing an SNP attestation report and a vTPM quote
+
+Verification steps:
+1. TPM quote signed by the AK in the HCL variable data
+2. Attestation nonce matches the TPM quote nonce
+3. TPM PCR digest matches the digest in the quote
+4. SNP report is genuine
+
+The claims include all SNP fields plus a `tpm` hierarchy with SHA256 PCR values (`tpm.pcr0` through `tpm.pcrN`). The kernel, initrd, and rootfs are measured into the vTPM registers.
+
+---
+
+### `az-tdx-vtpm`
+
+Verifier for Azure confidential VMs using Intel TDX with a virtual TPM.
+
+- **Architecture**: `x86_64`
+- **Feature flag**: `az-tdx-vtpm-verifier`
+- **Evidence struct**: `Evidence` (from `az_tdx_vtpm::compat`)
+- **Evidence fields**: HCL report containing a TDX quote and a vTPM quote
+
+Verification steps:
+1. TPM quote signed by the AK in the HCL variable data
+2. Attestation nonce matches the TPM quote nonce
+3. TPM PCR digest matches the digest in the quote
+4. TD quote is genuine
+5. TD report's `report_data` field matches hashed HCL variable data
+6. Init data hash matches the designated initdata PCR
+
+The claims include all TDX fields plus a `tpm` hierarchy with SHA256 PCR values.
+
+---
+
+### `cca`
+
+Verifier for Arm Confidential Compute Architecture (Arm CCA). Supports both local and remote (Veraison) verification.
+
+- **Architecture**: `aarch64`
+- **Feature flag**: `cca-verifier`
+- **Evidence struct**: `CcaEvidence`
+
+Configuration is read from the `CCA_CONFIG_FILE` environment variable.
+
+---
+
+### `csv`
+
+Verifier for Hygon China Security Virtualization (CSV).
+
+- **Architecture**: `x86_64`
+- **Feature flag**: `csv-verifier`
+- **Evidence struct**: `CsvEvidence`
+
+Supports CSV quote version 1 and version 2. Version 2 adds RTMR registers (`rtmr0` through `rtmr4`). HSK and CEK certificates are fetched from the Hygon certificate directory (default: `/opt/hygon/csv`).
+
+---
+
+### `hygon-dcu`
+
+Verifier for Hygon Deep Computing Unit (DCU) devices.
+
+- **Architecture**: `x86_64`
+- **Feature flag**: `hygon-dcu-verifier`
+- **Evidence struct**: `HygonDcuVerifier` (default)
+
+<Note>
+The Hygon DCU verifier is available on x86_64 via the `all-verifier` feature flag. It is distinct from the Hygon CSV verifier (`csv`), which targets the CPU-level China Security Virtualization platform.
+</Note>
+
+---
+
+### `se`
+
+Verifier for IBM Secure Execution (IBM SE).
+
+- **Architecture**: `s390x`
+- **Feature flag**: `se-verifier`
+- **Evidence struct**: `SeEvidence`
+
+<Note>
+The IBM SE verifier does not verify the report data hash or init data hash fields. Inputs for these fields are ignored with a warning.
+</Note>
+
+See the [IBM SE README](https://github.com/confidential-containers/trustee/blob/main/deps/verifier/src/se/README.md) for setup details including the required host key documents.
+
+---
+
+### `nvidia`
+
+Verifier for NVIDIA GPU devices. Supports Hopper architecture GPUs with either local or remote (NRAS) verification.
+
+- **Architecture**: `x86_64`, `s390x`
+- **Feature flag**: `nvidia-verifier`
+- **Evidence struct**: `NvDeviceEvidence` (via `NvidiaAttestationReport`)
+
+Two verification modes are available:
+
+<Tabs>
+  <Tab title="Local">
+    Verifies the SPDM-based attestation report and certificate chain locally. Only Hopper GPUs are supported. Claims include device `arch`, `uuid`, `measurements`, and `config.*` fields.
+  </Tab>
+  <Tab title="Remote (NRAS)">
+    Sends the evidence to the NVIDIA Remote Attestation Service (NRAS). Returns the full set of NRAS detached claims plus the `x-nvidia-overall-att-result`.
+
+    <Warning>
+    Accessing NRAS requires entering into a licensing agreement with NVIDIA. Using the remote verifier assumes you have completed this.
+    </Warning>
+
+    Default NRAS URL: `https://nras.attestation.nvidia.com/v4/attest`
+  </Tab>
+</Tabs>
+
+Configure the verification mode in the AS configuration file:
+
+```json
+{
+    "verifier_config": {
+        "nvidia_verifier": {
+            "type": "Local"
+        }
+    }
+}
+```
+
+---
+
+### `tpm`
+
+Verifier for Trusted Platform Module (TPM) devices (standalone, not integrated with Azure vTPM).
+
+- **Architecture**: `x86_64`
+- **Feature flag**: `tpm-verifier`
+- **Evidence struct**: `Evidence` (fields: `ak_public`, `tpm_quote`)
+
+<Warning>
+TPM devices (except the Azure vTPM series) are not bound to TEE endorsement. When using TPM as a standalone attestation device, you must independently trust the TPM itself. There is no cryptographic binding between the TPM and any underlying TEE hardware. This verifier is primarily intended for development purposes.
+</Warning>
+
+The verifier checks the TPM quote against a set of trusted Attestation Key (AK) files. Configure the trusted keys directory and maximum key count in the AS configuration:
+
+```json
+{
+    "verifier_config": {
+        "tpm_verifier": {
+            "trusted_ak_keys_dir": "/etc/tpm/trusted_ak_keys",
+            "max_trusted_ak_keys": 100
+        }
+    }
+}
+```

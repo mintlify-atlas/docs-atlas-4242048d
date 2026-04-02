@@ -1,0 +1,375 @@
+---
+title: "KBS client"
+description: "A CLI tool and Rust library for testing and configuring the Key Broker Service and Attestation Service."
+---
+
+The `kbs-client` crate provides two things: a **CLI binary** for interacting with the KBS from the command line, and a **Rust library** that other programs can use to attest, retrieve resources, and administer the KBS programmatically.
+
+You can run the CLI inside a TEE to make requests with real attestation evidence, supply pre-existing evidence files, or use the built-in sample attester as a fallback for development and testing.
+
+<Note>
+For production attestation clients running inside TEEs, see [guest-components](https://github.com/confidential-containers/guest-components). The `kbs-client` is intended for testing, configuration, and administration.
+</Note>
+
+## Building and installing
+
+<Steps>
+  <Step title="Install prerequisites">
+    You need the Rust toolchain and standard build dependencies. See the [quickstart](/quickstart) for full dependency installation steps.
+  </Step>
+
+  <Step title="Build the CLI binary">
+    Build with support for all attesters (default):
+
+    ```bash
+    make -C kbs cli
+    ```
+
+    To build with the sample attester only (fewer dependencies, suitable for CI):
+
+    ```bash
+    make -C kbs cli CLI_FEATURES=sample_only
+    ```
+
+    The binary is placed at `target/release/kbs-client`.
+  </Step>
+
+  <Step title="Install system-wide">
+    ```bash
+    sudo make -C kbs install-cli
+    ```
+  </Step>
+</Steps>
+
+### Feature flags
+
+The `kbs-client` crate exposes feature flags to select which TEE attesters to compile in:
+
+| Feature flag | Description |
+|---|---|
+| `all-attesters` | Enable all supported attesters |
+| `tdx-attester` | Intel TDX |
+| `sgx-attester` | Intel SGX |
+| `snp-attester` | AMD SEV-SNP |
+| `az-snp-vtpm-attester` | Azure SEV-SNP with vTPM |
+| `az-tdx-vtpm-attester` | Azure TDX with vTPM |
+| `csv-attester` | Hygon CSV |
+| `cca-attester` | Arm CCA |
+| `se-attester` | IBM Secure Execution |
+| `tpm-attester` | TPM |
+| `nvidia-attester` | NVIDIA GPU attestation |
+
+## Pre-built image
+
+A community-maintained container image of `kbs-client` is available on GitHub ORAS:
+
+```bash
+docker pull ghcr.io/confidential-containers/staged-images/kbs-client
+```
+
+## Global flags
+
+These flags apply to every subcommand:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--url <URL>` | `http://127.0.0.1:8080` | The KBS server root URL |
+| `--cert-file <PATH>` | — | Custom HTTPS root certificate for the KBS (PEM format). Required when using a self-signed TLS certificate |
+
+## Commands
+
+### `get-resource`
+
+Retrieve a confidential resource from the KBS. The client performs attestation inline unless you supply a pre-obtained attestation token.
+
+```
+kbs-client [--url <URL>] get-resource --path <RESOURCE_PATH> [OPTIONS]
+```
+
+| Flag | Description |
+|---|---|
+| `--path <PATH>` | Resource path in the format `<repository>/<type>/<tag>`, e.g. `default/test/dummy` |
+| `--tee-key-file <PATH>` | RSA private key (PEM) used to decrypt the response payload. If omitted, a key pair is generated internally |
+| `--attestation-token <PATH>` | Path to a pre-obtained attestation token file. When set, `--tee-key-file` must also be provided and the public key must match the `tee-pubkey` claim in the token |
+| `<init-data>` | Plaintext init-data that was measured at boot time. Compared against the init-data in hardware evidence; if it matches, the raw init-data claims are included in the attestation token |
+
+**Examples**
+
+Retrieve a resource with inline attestation (background-check mode):
+
+```bash
+kbs-client --url http://127.0.0.1:8080 get-resource --path default/test/dummy
+```
+
+Retrieve a resource with a pre-obtained attestation token (passport mode):
+
+```bash
+kbs-client --url http://127.0.0.1:50002 \
+  get-resource \
+  --attestation-token test/attestation_token \
+  --tee-key-file test/tee_key.pem \
+  --path default/test/dummy
+```
+
+Resource bytes are printed as base64-encoded output to stdout.
+
+---
+
+### `attest`
+
+Perform attestation and retrieve a signed attestation results token from the KBS. This is the first step in passport mode.
+
+```
+kbs-client [--url <URL>] attest [OPTIONS]
+```
+
+| Flag | Description |
+|---|---|
+| `--tee-key-file <PATH>` | RSA private key (PEM) whose public part is included in the token claims. If omitted, a key pair is generated internally |
+| `<init-data>` | Plaintext init-data measured at boot time |
+
+**Example**
+
+Obtain an attestation token (passport mode):
+
+```bash
+kbs-client --url http://127.0.0.1:50001 attest --tee-key-file test/tee_key.pem > test/attestation_token
+```
+
+The token is printed to stdout and can be piped or redirected to a file.
+
+---
+
+### `config`
+
+Administrative commands for configuring the KBS. All `config` subcommands require an Ed25519 private key to authenticate as a KBS administrator.
+
+```
+kbs-client [--url <URL>] config --auth-private-key <PATH> <SUBCOMMAND>
+```
+
+| Flag | Description |
+|---|---|
+| `--auth-private-key <PATH>` | Path to the Ed25519 private key used to sign the admin JWT. This is the key generated during KBS setup |
+
+#### `config set-resource`
+
+Upload a resource file to the KBS storage.
+
+```
+kbs-client config --auth-private-key <KEY> set-resource --path <PATH> --resource-file <FILE>
+```
+
+| Flag | Description |
+|---|---|
+| `--path <PATH>` | Resource path: `<repository>/<type>/<tag>` |
+| `--resource-file <FILE>` | Path to the file containing the resource data |
+
+**Example**
+
+```bash
+kbs-client --url http://127.0.0.1:8080 \
+  config --auth-private-key config/private.key \
+  set-resource \
+  --resource-file test/dummy_data \
+  --path default/test/dummy
+```
+
+---
+
+#### `config set-resource-policy`
+
+Upload a Rego resource policy that controls which requests the KBS will serve. Exactly one of the following must be provided:
+
+| Flag | Description |
+|---|---|
+| `--policy-file <FILE>` | Path to a custom Rego policy file |
+| `--allow-all` | Use the built-in policy that allows access to all resources |
+| `--deny-all` | Use the built-in policy that denies all resource access |
+| `--affirming` | Use the built-in policy that only releases resources when the attestation token is affirming |
+| `--default` | Use the built-in default policy (denies access when sample evidence is presented) |
+
+**Examples**
+
+Apply a custom policy:
+
+```bash
+kbs-client --url http://127.0.0.1:8080 \
+  config --auth-private-key config/private.key \
+  set-resource-policy \
+  --policy-file allow_all.rego
+```
+
+Apply the built-in allow-all policy for development:
+
+```bash
+kbs-client --url http://127.0.0.1:8080 \
+  config --auth-private-key config/private.key \
+  set-resource-policy \
+  --allow-all
+```
+
+---
+
+#### `config set-attestation-policy`
+
+Upload a Rego attestation policy that the Attestation Service evaluates against TEE evidence.
+
+```
+kbs-client config --auth-private-key <KEY> set-attestation-policy --policy-file <FILE> [OPTIONS]
+```
+
+| Flag | Description |
+|---|---|
+| `--policy-file <FILE>` | Path to the Rego policy file |
+| `--type <TYPE>` | Policy format type (default: `rego`) |
+| `--id <ID>` | Policy ID (default: `default_cpu`) |
+
+**Example**
+
+```bash
+kbs-client --url http://127.0.0.1:8080 \
+  config --auth-private-key config/private.key \
+  set-attestation-policy \
+  --policy-file /path/to/policy.rego
+```
+
+---
+
+#### `config get-reference-value`
+
+Retrieve a reference value from the RVPS by its ID. The request is proxied through the KBS.
+
+```
+kbs-client config --auth-private-key <KEY> get-reference-value --id <ID>
+```
+
+| Flag | Description |
+|---|---|
+| `--id <ID>` | The ID of the reference value to retrieve |
+
+---
+
+#### `config set-sample-reference-value`
+
+Register a sample reference value in the RVPS via the KBS. This requires the RVPS to have the sample extractor enabled.
+
+<Warning>
+The sample extractor is not suitable for production use. It accepts arbitrary reference values without verification.
+</Warning>
+
+```
+kbs-client config --auth-private-key <KEY> set-sample-reference-value <NAME> <VALUE> [OPTIONS]
+```
+
+| Argument / Flag | Description |
+|---|---|
+| `<NAME>` | The name (key) of the reference value |
+| `<VALUE>` | The reference value itself |
+| `--as-integer` | Parse the value as an integer |
+| `--as-bool` | Parse the value as a boolean |
+| `--as-single-value` | Store as a single value instead of a single-element list (the default) |
+
+---
+
+## Logging
+
+By default, `kbs-client` logs at `INFO` level to stderr. Control the level with the `RUST_LOG` environment variable:
+
+```bash
+RUST_LOG=debug kbs-client --url http://127.0.0.1:8080 get-resource --path default/test/dummy
+```
+
+---
+
+## Using as a Rust library
+
+The `kbs-client` crate exposes async functions for use in your own Rust programs.
+
+Add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+kbs-client = { path = "tools/kbs-client" }
+```
+
+### API overview
+
+```rust
+use kbs_client::{attestation, get_resource_with_attestation, get_resource_with_token};
+use kbs_client::{set_resource, set_attestation_policy, set_resource_policy};
+
+// Attest and get a signed token
+let token = attestation(
+    "http://127.0.0.1:8080",
+    None,        // tee_key_pem: generates a key pair internally
+    vec![],      // kbs_root_certs_pem: empty for plain HTTP
+    None,        // init_data
+).await?;
+
+// Get a resource via inline attestation
+let resource_bytes = get_resource_with_attestation(
+    "http://127.0.0.1:8080",
+    "default/test/dummy",
+    None,        // tee_key_pem
+    vec![],      // kbs_root_certs_pem
+    None,        // init_data
+).await?;
+
+// Get a resource with a pre-obtained attestation token
+let resource_bytes = get_resource_with_token(
+    "http://127.0.0.1:50002",
+    "default/test/dummy",
+    tee_key_pem,
+    attestation_token,
+    vec![],
+).await?;
+
+// Upload a resource (requires admin key)
+set_resource(
+    "http://127.0.0.1:8080",
+    auth_key,
+    resource_bytes,
+    "default/test/dummy",
+    vec![],
+).await?;
+
+// Upload an attestation policy
+set_attestation_policy(
+    "http://127.0.0.1:8080",
+    auth_key,
+    policy_bytes,
+    Some("rego".to_string()),   // policy_type
+    Some("default_cpu".to_string()), // policy_id
+    vec![],
+).await?;
+
+// Upload a resource policy
+set_resource_policy(
+    "http://127.0.0.1:8080",
+    auth_key,
+    policy_bytes,
+    vec![],
+).await?;
+```
+
+All library functions are `async` and require a `tokio` runtime.
+
+---
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="KBS overview" icon="server" href="/kbs/overview">
+    Learn about the Key Broker Service architecture.
+  </Card>
+  <Card title="Resource management" icon="database" href="/kbs/resource-management">
+    How resources are stored and retrieved.
+  </Card>
+  <Card title="Policies" icon="shield" href="/kbs/policies">
+    Writing attestation and resource policies.
+  </Card>
+  <Card title="Trustee CLI" icon="terminal" href="/tools/trustee-cli">
+    Unified CLI for running a full Trustee stack locally.
+  </Card>
+</CardGroup>
